@@ -9,6 +9,8 @@ import {
   campaignCategoryUrl,
   campaignPlayDisabledReason,
   campaignPool,
+  groupAvailableCampaigns,
+  pickAvailableCampaign,
   sanitizeImageUrl,
 } from '../shared/drops-model.js';
 import { INTERVAL_OPTIONS } from '../shared/settings.js';
@@ -135,6 +137,7 @@ let autoRefreshDone = false;
 const actionLocks = new Set();
 let playingCampaignId = null;
 let playError = null;
+const availableCampaignChoices = new Set();
 
 // ---------------------------------------------------------------------------
 // Messaging
@@ -433,8 +436,12 @@ function campaignCard(campaign) {
   </article>`;
 }
 
-function miniCampaign(campaign) {
-  const title = campaign.game?.name || 'Twitch';
+function miniCategory(group) {
+  const campaign = pickAvailableCampaign(group.campaigns, { preferredIds: [
+    playingCampaignId, ...[...availableCampaignChoices].reverse(), playError?.campaignId,
+    state.farm?.manualCampaignId, ...(state.farm?.campaignIds || []),
+  ] });
+  const title = group.game?.name || 'Twitch';
   const name = campaign.name || title;
   const unavailable = campaignPlayDisabledReason(campaign);
   const upcoming = unavailable === 'Кампания ещё не началась';
@@ -447,19 +454,26 @@ function miniCampaign(campaign) {
   const playTitle = unavailable || (playingCampaignId
     ? 'Дождитесь завершения поиска канала'
     : `Play — смотреть кампанию «${name}»`);
-  const farming = state.farm?.enabled && state.farm.campaignIds?.includes(campaign.id);
-  return `<div class="mini${farming ? ' is-farming' : ''}">
-    ${thumb(campaign.imageUrl, title, true)}
+  const farmIds = state.farm?.enabled ? state.farm.campaignIds || [] : [];
+  const farming = group.campaigns.some((item) => farmIds.includes(item.id));
+  const watching = farmIds.includes(campaign.id) ? ' · фармится' : farming ? ' · смотрим категорию' : '';
+  const multiple = group.campaigns.length > 1;
+  const count = multiple ? `${group.campaigns.length} ${plural(group.campaigns.length, 'кампания', 'кампании', 'кампаний')} · ` : '';
+  const selection = multiple
+    ? `<select class="mini-campaign-select" data-available-category="${attr(group.key)}" aria-label="${attr(`Кампания категории ${title}`)}" title="${attr(name)}" ${playingCampaignId ? 'disabled' : ''}>${group.campaigns.map((item) => `<option value="${attr(item.id)}" ${item.id === campaign.id ? 'selected' : ''}>${esc(item.name || title)}</option>`).join('')}</select>`
+    : name !== title ? `<div class="mini-sub" title="${attr(name)}">${esc(name)}</div>` : '';
+  return `<div class="mini${farming ? ' is-farming' : ''}" data-category-key="${attr(group.key)}">
+    ${thumb(group.imageUrl, title, true)}
     <div class="mini-info">
       <div class="mini-title" title="${attr(title)}">${esc(title)}</div>
-      ${name !== title ? `<div class="mini-sub" title="${attr(name)}">${esc(name)}</div>` : ''}
-      <div class="mini-sub">${esc(upcoming ? `старт ${formatDateTime(campaign.startsAt)}` : formatTimeLeft(campaign.endsAt))}${farming ? ' · фармится' : ''}</div>
+      ${selection}
+      <div class="mini-sub">${esc(count)}${esc(upcoming ? `старт ${formatDateTime(campaign.startsAt)}` : formatTimeLeft(campaign.endsAt))}${watching}</div>
       ${note ? `<div class="mini-note${error ? ' is-error' : needsLink ? ' is-warn' : ''}" role="status">${esc(note)}</div>` : ''}
       ${needsLink ? `<button type="button" class="pill is-link mini-link" data-action="open-url" data-url="${attr(campaign.accountLinkUrl || DROPS_URL)}">${icon('link', 10)} Привязать аккаунт</button>` : ''}
     </div>
     <div class="mini-actions">
       <button type="button" class="play-btn" data-action="farm-play" data-campaign-id="${attr(campaign.id)}" title="${attr(playTitle)}" aria-label="${attr(playTitle)}" aria-busy="${loading}" ${unavailable || playingCampaignId ? 'disabled' : ''}>${loading ? '<span class="spinner"></span>' : icon('play', 16)}</button>
-      <button type="button" class="btn btn-sm btn-ghost" data-action="open-url" data-url="${attr(campaignCategoryUrl(campaign))}" title="Открыть категорию на Twitch" aria-label="${attr(`Открыть категорию ${title} на Twitch`)}">${icon('external', 11)}</button>
+      <button type="button" class="btn btn-sm btn-ghost" data-action="open-url" data-url="${attr(campaignCategoryUrl({ game: group.game }))}" title="Открыть категорию на Twitch" aria-label="${attr(`Открыть категорию ${title} на Twitch`)}">${icon('external', 11)}</button>
     </div>
   </div>`;
 }
@@ -484,9 +498,11 @@ function renderDrops() {
   const farm = farmBanner();
   const cards = campaigns.map(campaignCard).join('');
 
-  const available = state.drops?.available || [];
+  const available = groupAvailableCampaigns(state.drops);
+  const availableCount = available.reduce((total, group) => total + group.campaigns.length, 0);
+  const availableSummary = `${available.length} ${plural(available.length, 'категория', 'категории', 'категорий')} · ${availableCount} ${plural(availableCount, 'кампания', 'кампании', 'кампаний')}`;
   const availableBlock = available.length
-    ? `${sectionHead('Доступные кампании', `${available.length}`)}<p class="section-note available-note">▶ запускает автоферму или переключает её на выбранную кампанию.</p><div class="mini-list">${available.map(miniCampaign).join('')}</div>`
+    ? `${sectionHead('Доступные кампании', availableSummary)}<p class="section-note available-note">Одна строка — одна категория. Если кампаний несколько, выберите нужную в списке. ▶ запускает автоферму или переключает просмотр.</p><div class="mini-list">${available.map(miniCategory).join('')}</div>`
     : '';
 
   const body = campaigns.length
@@ -1098,6 +1114,18 @@ document.addEventListener('click', async (event) => {
 });
 
 document.addEventListener('change', async (event) => {
+  const selection = event.target.closest('[data-available-category]');
+  if (selection && state && !playingCampaignId) {
+    const group = groupAvailableCampaigns(state.drops).find((item) => item.key === selection.dataset.availableCategory);
+    if (!group?.campaigns.some((campaign) => campaign.id === selection.value)) return;
+    for (const campaign of group.campaigns) availableCampaignChoices.delete(campaign.id);
+    availableCampaignChoices.add(selection.value);
+    playError = null;
+    render();
+    [...document.querySelectorAll('[data-available-category]')]
+      .find((item) => item.dataset.availableCategory === group.key)?.focus();
+    return;
+  }
   const input = event.target.closest('[data-setting]');
   if (!input || !state) return;
   const key = input.dataset.setting;

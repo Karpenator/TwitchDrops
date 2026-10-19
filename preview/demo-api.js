@@ -172,6 +172,14 @@
           startsIn: -DAY,
           endsIn: 6 * DAY,
         }),
+        availableCampaign({
+          id: 'apex-community', name: 'Apex Legends: Community Drops',
+          game: 'Apex Legends', slug: 'apex-legends', endsIn: 7 * DAY,
+        }),
+        availableCampaign({
+          id: 'apex-next-week', name: 'Apex Legends: Next Event',
+          game: 'Apex Legends', slug: 'apex-legends', startsIn: DAY, endsIn: 8 * DAY,
+        }),
         ...[
           ['warframe', 'Warframe', 'Warframe: Community Drops'],
           ['escape-from-tarkov', 'Escape from Tarkov', 'Escape from Tarkov: Weekend Drops'],

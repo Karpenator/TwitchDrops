@@ -12,6 +12,7 @@ import {
   campaignWatchMark,
   farmGroupFromIds,
   groupFarmableCampaigns,
+  groupAvailableCampaigns,
   groupWatchMark,
   computeCampaignStats,
   flattenClaimableDrops,
@@ -25,6 +26,7 @@ import {
   normalizeCampaign,
   normalizeCampaignList,
   pickCandidate,
+  pickAvailableCampaign,
   pickFarmCampaign,
   pickFarmGroup,
   sanitizeImageUrl,
@@ -487,4 +489,120 @@ test('only explicitly permitted unlinked campaigns enter farmable groups', () =>
   const groups = groupFarmableCampaigns([selected, other], NOW, { allowUnlinkedIds: [selected.id] });
   assert.equal(groups.length, 1);
   assert.deepEqual(groups[0].campaigns.map((campaign) => campaign.id), [selected.id]);
+});
+
+function availableCategoryFixture(id, game = { id: 'rust-id', name: 'Rust', slug: 'rust' }) {
+  const campaign = farmableCampaignFixture({ id, gameName: game.name, gameSlug: game.slug });
+  return { ...campaign, game: { ...game }, isAvailable: true, isInProgress: false };
+}
+
+test('available categories appear once while every distinct campaign and reward stays intact', () => {
+  const first = availableCategoryFixture('first');
+  const second = availableCategoryFixture('second', { id: 'rust-id', name: 'RUST localized title', slug: 'rust' });
+  const other = availableCategoryFixture('other', { id: 'other-id', name: 'Other Game', slug: 'other-game' });
+  const drops = { available: [first, other, second] };
+  const before = structuredClone(drops);
+  const groups = groupAvailableCampaigns(drops);
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups[0].campaigns.map((campaign) => campaign.id), ['first', 'second']);
+  assert.deepEqual(groups[1].campaigns.map((campaign) => campaign.id), ['other']);
+  assert.equal(groups[0].campaigns[0], first);
+  assert.equal(groups[0].campaigns[1], second);
+  assert.notEqual(first.drops[0].id, second.drops[0].id, 'different reward sets must not be collapsed');
+  assert.deepEqual(drops, before, 'display grouping must not delete or rewrite stored campaigns');
+});
+
+test('available grouping removes repeated campaign ids and stale duplicates already in inventory', () => {
+  const started = availableCategoryFixture('started');
+  const remaining = availableCategoryFixture('remaining');
+  const groups = groupAvailableCampaigns({
+    campaigns: [started], available: [started, remaining, remaining, { ...remaining }, null, {}],
+  });
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0].campaigns, [remaining]);
+  assert.deepEqual(groupAvailableCampaigns(null), []);
+});
+
+test('partial category metadata joins the canonical game by id, slug or a unique name alias', () => {
+  const partial = availableCategoryFixture('partial', { name: 'Dungeons &amp; Dragons' });
+  const canonical = availableCategoryFixture('canonical', { id: 'dnd', name: 'Dungeons & Dragons', slug: 'dungeons-and-dragons' });
+  const byName = availableCategoryFixture('name', { name: ' DUNGEONS & DRAGONS ' });
+  const bySlug = availableCategoryFixture('slug', { slug: ' DUNGEONS-AND-DRAGONS ' });
+  const groups = groupAvailableCampaigns({ available: [partial, canonical, byName, bySlug] });
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0].campaigns.map((campaign) => campaign.id), ['partial', 'canonical', 'name', 'slug']);
+  assert.equal(groups[0].game.id, 'dnd');
+  assert.equal(campaignCategoryUrl(groups[0]), 'https://www.twitch.tv/directory/category/dungeons-and-dragons?filter=drops');
+});
+
+test('a unique display-name alias preserves a canonical slug that cannot be inferred from that name', () => {
+  for (const id of ['canonical-id', '']) {
+    const partial = availableCategoryFixture('partial', { name: 'Display Name' });
+    const bySlug = availableCategoryFixture('by-slug', { slug: 'official-category-slug' });
+    const canonical = availableCategoryFixture('canonical', { id, name: 'Display Name', slug: 'official-category-slug' });
+    const groups = groupAvailableCampaigns({ available: [partial, bySlug, canonical] });
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].game.slug, 'official-category-slug');
+    assert.deepEqual(groups[0].campaigns.map((campaign) => campaign.id), ['partial', 'by-slug', 'canonical']);
+  }
+});
+
+test('distinct canonical slugs beat ambiguous names and guessed aliases when game ids are missing', () => {
+  const partial = availableCategoryFixture('name-only', { name: 'Shared Name' });
+  const bySlug = availableCategoryFixture('by-slug', { slug: 'another-slug' });
+  const other = availableCategoryFixture('other', { name: 'Shared Name', slug: 'another-slug' });
+  const canonical = availableCategoryFixture('canonical', { name: 'Shared Name', slug: 'shared-name' });
+  const canonicalBySlug = availableCategoryFixture('canonical-by-slug', { slug: 'shared-name' });
+  const groups = groupAvailableCampaigns({ available: [partial, bySlug, other, canonical, canonicalBySlug] });
+  assert.equal(groups.length, 3);
+  assert.deepEqual(groups[0].campaigns.map((campaign) => campaign.id), ['name-only']);
+  assert.deepEqual(groups[1].campaigns.map((campaign) => campaign.id), ['by-slug', 'other']);
+  assert.deepEqual(groups[2].campaigns.map((campaign) => campaign.id), ['canonical', 'canonical-by-slug']);
+});
+
+test('different known game ids never merge through an ambiguous title or slug alias', () => {
+  const one = availableCategoryFixture('one', { id: 'one-game', name: 'Same Title', slug: 'same-slug' });
+  const two = availableCategoryFixture('two', { id: 'two-game', name: 'Same Title', slug: 'same-slug' });
+  const unknown = availableCategoryFixture('unknown', { name: 'Same Title' });
+  const otherUnknown = availableCategoryFixture('other-unknown', { name: ' SAME TITLE ' });
+  const groups = groupAvailableCampaigns({ available: [unknown, one, otherUnknown, two] });
+  assert.equal(groups.length, 3);
+  assert.deepEqual(groups[0].campaigns.map((campaign) => campaign.id), ['unknown', 'other-unknown']);
+  assert.equal(groups[1].game.id, 'one-game');
+  assert.equal(groups[2].game.id, 'two-game');
+});
+
+test('missing game metadata does not collapse unrelated unknown campaigns into Twitch', () => {
+  const groups = groupAvailableCampaigns({ available: [
+    { id: 'unknown-one' }, { id: 'unknown-two', game: {} }, { id: 'unknown-three', game: { name: 'Twitch' } },
+    { id: 'punctuation-one', game: { name: '!!!' } }, { id: 'punctuation-two', game: { name: '???' } },
+  ] });
+  assert.equal(groups.length, 5);
+  assert.equal(new Set(groups.map((group) => group.key)).size, 5);
+});
+
+test('all categories and all campaigns remain available without a display cutoff', () => {
+  const campaigns = Array.from({ length: 46 }, (_, index) => availableCategoryFixture(`campaign-${index}`, {
+    id: `game-${index}`, name: `Game ${index}`, slug: `game-${index}`,
+  }));
+  assert.equal(groupAvailableCampaigns({ available: campaigns }).length, 46);
+  const sameGame = campaigns.map((campaign) => ({ ...campaign, game: { id: 'shared-game', name: 'Shared', slug: 'shared' } }));
+  const groups = groupAvailableCampaigns({ available: sameGame });
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].campaigns.length, 46);
+});
+
+test('the category Play target defaults to a watchable campaign but preserves explicit and current choices', () => {
+  const active = farmableCampaignFixture({ id: 'active' });
+  const unlinked = farmableCampaignFixture({ id: 'unlinked', linked: false });
+  const future = { ...active, id: 'future', active: false, upcoming: true, startsAt: NOW + 60_000 };
+  const campaigns = [future, unlinked, active];
+  const groups = groupAvailableCampaigns({ available: campaigns });
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0].campaigns, campaigns, 'upcoming and unlinked campaigns stay selectable');
+  assert.equal(pickAvailableCampaign(campaigns, { now: NOW }).id, 'unlinked');
+  assert.equal(pickAvailableCampaign(campaigns, { now: NOW, preferredIds: ['missing', 'active'] }).id, 'active');
+  assert.equal(pickAvailableCampaign(campaigns, { now: NOW, preferredIds: ['future'] }).id, 'future');
+  assert.match(campaignPlayDisabledReason(pickAvailableCampaign(campaigns, { now: NOW, preferredIds: ['future'] }), NOW), /не началась/);
+  assert.equal(pickAvailableCampaign([], { now: NOW }), null);
 });

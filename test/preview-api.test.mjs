@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { groupAvailableCampaigns } from '../src/shared/drops-model.js';
 
 /**
  * The preview demo is a static page, but its chrome.* shim is plain script.
@@ -31,7 +32,7 @@ test('GET_STATE returns a coherent demo snapshot', async () => {
   assert.equal(response.openTabs.length, 2);
   assert.equal(response.state.session.authenticated, true);
   assert.equal(response.state.drops.campaigns.length, 4);
-  assert.equal(response.state.drops.available.length, 8);
+  assert.equal(response.state.drops.available.length, 10);
   assert.equal(response.state.points.channels.shroud.availableClaimId, 'demo-claim-shroud');
   assert.equal(response.state.points.tracked.length, 2);
   assert.equal(response.state.history.length, 4);
@@ -224,4 +225,19 @@ test('Play starts the genuinely unlinked demo campaign with a non-blocking warni
   assert.equal(response.state.settings.autoFarm, true);
   const stopped = await send(runtime, { type: 'STOP_FARM' });
   assert.equal(stopped.state.farm.manualCampaignId, null);
+});
+
+test('the demo groups multiple campaigns into one category without dropping any Play targets', async () => {
+  const { runtime } = makeApi();
+  const response = await send(runtime, { type: 'GET_STATE' });
+  const groups = groupAvailableCampaigns(response.state.drops);
+  assert.equal(groups.length, 8);
+  assert.equal(groups.reduce((sum, group) => sum + group.campaigns.length, 0), 10);
+  const apex = groups.find((group) => group.game.slug === 'apex-legends');
+  assert.deepEqual(apex.campaigns.map((campaign) => campaign.id), ['apex-campaign', 'apex-community', 'apex-next-week']);
+  const played = await send(runtime, { type: 'FARM_PLAY', campaignId: 'apex-community' });
+  assert.equal(played.ok, true);
+  assert.equal(played.state.farm.manualCampaignId, 'apex-community');
+  assert.equal(played.state.farm.campaignId, 'apex-community');
+  assert.ok(played.state.farm.campaignIds.includes('apex-campaign'));
 });

@@ -1,4 +1,4 @@
-import { categoryUrl } from './twitch-url.js';
+import { categorySlug, categoryUrl } from './twitch-url.js';
 import { toTimestamp, clamp } from './time.js';
 
 const CLAIMABLE_STATUSES = new Set([
@@ -456,6 +456,90 @@ export function campaignPool(drops) {
     }
   }
   return [...byId.values()];
+}
+
+/**
+ * One display row per available category, without deleting real campaigns.
+ * Game ids are authoritative. Slug/name aliases attach older partial snapshots
+ * only when they identify a single category, never merge distinct known ids.
+ */
+export function groupAvailableCampaigns(drops) {
+  const inventoryIds = new Set(arr(drops?.campaigns).map((campaign) => text(campaign?.id)));
+  const unique = new Map();
+  arr(drops?.available).forEach((campaign, index) => {
+    const id = text(campaign?.id);
+    if (id && !inventoryIds.has(id) && !unique.has(id)) unique.set(id, { campaign, index });
+  });
+  const rows = [...unique.values()];
+  const gameId = ({ campaign }) => text(campaign.game?.id);
+  const aliasesFor = (game) => {
+    const slug = text(game?.slug).toLowerCase();
+    const name = text(game?.name);
+    const named = name && name.toLowerCase() !== 'twitch';
+    const guessed = named && categorySlug(name);
+    return [...new Set([
+      slug && `canonical:${slug}`,
+      slug && `slug:${slug}`,
+      named && `name:${name.normalize('NFKC').toLowerCase().replace(/\s+/g, ' ')}`,
+      guessed && `slug:${guessed}`,
+    ].filter(Boolean))];
+  };
+  const groups = new Map();
+  const byAlias = new Map();
+  // Resolve ids, then canonical slugs, before name-only snapshots. This also
+  // prevents incomplete rows bridging two genuinely different categories.
+  const strength = (row) => gameId(row) ? 2 : text(row.campaign.game?.slug) ? 1 : 0;
+  for (const row of rows.sort((a, b) => strength(b) - strength(a))) {
+    const { campaign, index } = row;
+    const id = gameId(row);
+    const aliases = aliasesFor(campaign.game);
+    const slug = text(campaign.game?.slug).toLowerCase();
+    const fallback = categorySlug(campaign.game?.name) || text(campaign.game?.name).normalize('NFKC').toLowerCase();
+    let key = id ? `game:${id}` : slug ? `slug:${slug}` : `name:${fallback || campaign.id}`;
+    if (!id) {
+      for (const alias of aliases) {
+        const matches = byAlias.get(alias);
+        if (matches?.size !== 1) continue;
+        const match = matches.values().next().value;
+        const existingSlug = text(groups.get(match)?.game.slug).toLowerCase();
+        // A shared name/guessed slug cannot override conflicting real slugs.
+        if (slug && existingSlug && slug !== existingSlug && alias !== `canonical:${slug}`) continue;
+        key = match;
+        break;
+      }
+      if (!aliases.length) key = `campaign:${campaign.id}`;
+    }
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, game: { ...campaign.game }, imageUrl: '', campaigns: [], order: index };
+      groups.set(key, group);
+    }
+    group.campaigns.push(row);
+    group.order = Math.min(group.order, index);
+    group.imageUrl ||= campaign.imageUrl || '';
+    for (const [field, value] of Object.entries(campaign.game || {})) {
+      if (!group.game[field] || (field === 'name' && group.game.name === 'Twitch')) group.game[field] = value;
+    }
+    for (const alias of aliases) {
+      if (!byAlias.has(alias)) byAlias.set(alias, new Set());
+      byAlias.get(alias).add(key);
+    }
+  }
+  return [...groups.values()].sort((a, b) => a.order - b.order).map(({ order, ...group }) => ({
+    ...group,
+    campaigns: group.campaigns.sort((a, b) => a.index - b.index).map(({ campaign }) => campaign),
+  }));
+}
+
+/** Prefer the explicit/current selection, then a watchable campaign over an upcoming one. */
+export function pickAvailableCampaign(campaigns, { preferredIds = [], now = Date.now() } = {}) {
+  const list = arr(campaigns);
+  for (const id of arr(preferredIds)) {
+    const preferred = list.find((campaign) => campaign.id === id);
+    if (preferred) return preferred;
+  }
+  return list.find((campaign) => isFarmableCampaign(campaign, now, { allowUnlinked: true })) ||
+    list.find((campaign) => !campaignPlayDisabledReason(campaign, now)) || list[0] || null;
 }
 
 export function pickFarmCampaign(campaigns, now = Date.now()) {
