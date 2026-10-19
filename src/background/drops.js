@@ -1,10 +1,10 @@
 import {
   CURRENT_USER_QUERY,
-  MAX_CAMPAIGN_DETAILS,
   MAX_CLAIMS_PER_CYCLE,
   queries,
 } from '../shared/constants.js';
 import {
+  campaignPool,
   flattenClaimableDrops,
   isClaimResponseSuccessful,
   markDropClaimed,
@@ -52,6 +52,7 @@ export class DropsService {
     this.onUpdate = onUpdate;
     this.logger = logger;
     this.inflight = null;
+    this.categorySlugs = new Map();
   }
 
   async #ensureUser() {
@@ -74,7 +75,7 @@ export class DropsService {
   async #fetchCampaignDetails(ids, login) {
     const detailsById = new Map();
     if (ids.length === 0) return detailsById;
-    const uniqueIds = [...new Set(ids.filter(Boolean))].slice(0, MAX_CAMPAIGN_DETAILS);
+    const uniqueIds = [...new Set(ids.filter(Boolean))];
     for (const batch of chunk(uniqueIds, DETAIL_BATCH_SIZE)) {
       const responses = await this.gql
         .batch(batch.map((id) => queries.campaignDetails(id, login)))
@@ -89,6 +90,44 @@ export class DropsService {
       });
     }
     return detailsById;
+  }
+
+  /** Resolve missing category slugs once per game, retaining a safe name fallback. */
+  async #resolveCategorySlugs(campaigns, previousCampaigns) {
+    const keyFor = (game) => String(game?.id || game?.name || game?.displayName || '').trim().toLowerCase();
+    for (const campaign of [...previousCampaigns, ...campaigns]) {
+      const key = keyFor(campaign?.game);
+      const slug = campaign?.game?.slug;
+      if (key && typeof slug === 'string' && slug.trim()) {
+        this.categorySlugs.set(key, slug.trim());
+      }
+    }
+    const missing = new Map();
+    for (const campaign of campaigns) {
+      const game = campaign?.game;
+      const key = keyFor(game);
+      const name = game?.name || game?.displayName;
+      if (key && name && !this.categorySlugs.has(key)) missing.set(key, game);
+    }
+    for (const batch of chunk([...missing], DETAIL_BATCH_SIZE)) {
+      const responses = await this.gql
+        .batch(batch.map(([, game]) => queries.gameCategory(game.name || game.displayName)))
+        .catch((error) => {
+          this.logger.warn?.('[TwitchAutoPilot] category slug lookup failed', error);
+          return [];
+        });
+      batch.forEach(([key, game], index) => {
+        const resolved = responses[index]?.data?.game;
+        if (game.id && resolved?.id && String(game.id) !== String(resolved.id)) return;
+        if (typeof resolved?.slug === 'string' && resolved.slug.trim()) {
+          this.categorySlugs.set(key, resolved.slug.trim());
+        }
+      });
+    }
+    return (raw) => {
+      const slug = this.categorySlugs.get(keyFor(raw?.game));
+      return slug ? { ...raw, game: { ...raw.game, slug } } : raw;
+    };
   }
 
   async refresh({ claim = true } = {}) {
@@ -114,12 +153,11 @@ export class DropsService {
       this.gql.data(queries.inventory()),
     ]);
 
-    const fatalAuth =
-      (dashboardResult.status === 'rejected' && dashboardResult.reason?.code === ERROR_CODES.AUTH) ||
-      (inventoryResult.status === 'rejected' && inventoryResult.reason?.code === ERROR_CODES.AUTH);
+    const fatalAuth = [dashboardResult, inventoryResult].find(
+      (result) => result.status === 'rejected' && result.reason?.code === ERROR_CODES.AUTH,
+    );
     if (fatalAuth) {
-      const error =
-        dashboardResult.status === 'rejected' ? dashboardResult.reason : inventoryResult.reason;
+      const error = fatalAuth.reason;
       await this.#storeSessionError(error);
       throw error;
     }
@@ -130,44 +168,52 @@ export class DropsService {
       throw error;
     }
 
+    const previous = await this.store.get();
+    const sameUser = Boolean(userId && previous.user?.id === userId);
+    const now = Date.now();
     const dashboardData = dashboardResult.status === 'fulfilled' ? dashboardResult.value : {};
     const inventoryData = inventoryResult.status === 'fulfilled' ? inventoryResult.value : {};
-    const dashboardRaw = extractDashboardCampaigns(dashboardData);
+    const dashboardRaw = extractDashboardCampaigns(dashboardData).filter((raw) => {
+      const status = String(raw?.status || '').toUpperCase();
+      return raw?.id && (status === 'ACTIVE' || status === 'UPCOMING');
+    });
     const inventoryRaw = extractInventoryCampaigns(inventoryData);
-    const inventoryIds = new Set(inventoryRaw.map((campaign) => String(campaign?.id || '')));
 
+    // The dashboard has category metadata, not the rewards/eligibility needed
+    // for scheduling. Hydrate ALL campaigns in bounded batches, not just the
+    // first 40 inventory entries. channelLogin is the viewer's login, not id.
     const detailsById = await this.#fetchCampaignDetails(
-      inventoryRaw.map((campaign) => String(campaign?.id || '')),
-      userId,
+      [...inventoryRaw, ...dashboardRaw].map((campaign) => String(campaign?.id || '')),
+      session.user?.login || '',
     );
     const mergedInventory = mergeCampaignsWithDetails(inventoryRaw, detailsById);
-
-    const inProgress = mergedInventory
-      .map((raw) => normalizeCampaign(raw, { userId, now: Date.now() }))
-      .filter(Boolean)
-      .map((campaign) => ({
-        ...campaign,
-        isInProgress: true,
-        isAvailable: false,
-      }));
-
-    const available = dashboardRaw
-      .filter((raw) => {
-        const id = String(raw?.id || '');
-        if (!id || inventoryIds.has(id)) return false;
-        const status = String(raw?.status || '').toUpperCase();
-        return status === 'ACTIVE' || status === 'UPCOMING';
-      })
-      .map((raw) =>
-        normalizeCampaign(
-          { ...raw, isAvailable: true, isInProgress: false },
-          { userId, now: Date.now() },
-        ),
-      )
-      .filter((campaign) => campaign && !campaign.expired)
-      .sort((a, b) => campaignEnd(a) - campaignEnd(b))
-      .slice(0, 30)
-      .map((campaign) => ({ ...campaign, isAvailable: true, isInProgress: false }));
+    const mergedDashboard = mergeCampaignsWithDetails(dashboardRaw, detailsById);
+    const withCategorySlug = await this.#resolveCategorySlugs(
+      [...mergedInventory, ...mergedDashboard],
+      campaignPool(previous.drops),
+    );
+    const inProgress = inventoryResult.status === 'rejected' && sameUser
+      ? previous.drops.campaigns
+      : mergedInventory
+          .map((raw) => normalizeCampaign(withCategorySlug(raw), { userId, now }))
+          .filter(Boolean)
+          .map((campaign) => ({ ...campaign, isInProgress: true, isAvailable: false }));
+    const inventoryIds = new Set(inProgress.map((campaign) => campaign.id));
+    const availableById = new Map();
+    const availableCampaigns = dashboardResult.status === 'rejected' && sameUser
+      ? previous.drops.available
+      : mergedDashboard
+          .map((raw) => normalizeCampaign(withCategorySlug(raw), { userId, now }))
+          .filter(Boolean);
+    for (const campaign of availableCampaigns) {
+      if (inventoryIds.has(campaign.id) || campaign.expired || campaign.completed) continue;
+      if (campaign.endsAt && campaign.endsAt <= now) continue;
+      availableById.set(campaign.id, { ...campaign, isAvailable: true, isInProgress: false });
+    }
+    const available = [...availableById.values()].sort((a, b) => campaignEnd(a) - campaignEnd(b));
+    const partialFailure = [dashboardResult, inventoryResult].find(
+      (result) => result.status === 'rejected',
+    );
 
     await this.store.update((state) => {
       state.user = session.user
@@ -185,7 +231,7 @@ export class DropsService {
       state.drops.campaigns = sortCampaigns(inProgress);
       state.drops.available = available;
       state.drops.lastSync = Date.now();
-      state.drops.error = null;
+      state.drops.error = partialFailure ? describeError(partialFailure.reason) : null;
       return state;
     });
 
@@ -232,7 +278,7 @@ export class DropsService {
 
   async claimDrop(campaignId, dropId, { manual = false } = {}) {
     const state = await this.store.get();
-    const { campaign, drop } = this.#findDrop(state.drops.campaigns, campaignId, dropId);
+    const { campaign, drop } = this.#findDrop(campaignPool(state.drops), campaignId, dropId);
     if (!campaign || !drop) {
       throw new TwitchApiError('Награда не найдена в инвентаре', {
         code: ERROR_CODES.NOT_FOUND,
@@ -262,11 +308,13 @@ export class DropsService {
 
       let updatedCampaign = null;
       await this.store.update((current) => {
-        current.drops.campaigns = current.drops.campaigns.map((item) => {
-          if (item.id !== campaignId) return item;
-          updatedCampaign = markDropClaimed(item, dropId);
-          return updatedCampaign;
-        });
+        for (const list of ['campaigns', 'available']) {
+          current.drops[list] = current.drops[list].map((item) => {
+            if (item.id !== campaignId) return item;
+            updatedCampaign = markDropClaimed(item, dropId);
+            return updatedCampaign;
+          });
+        }
         current.drops.campaigns = sortCampaigns(current.drops.campaigns);
         current.drops.lastClaimAt = Date.now();
         delete current.drops.claimFailures[dropId];
@@ -308,7 +356,7 @@ export class DropsService {
     const state = await this.store.get();
     const failures = state.drops.claimFailures || {};
     const now = Date.now();
-    const claimable = flattenClaimableDrops(state.drops.campaigns)
+    const claimable = flattenClaimableDrops(campaignPool(state.drops))
       .filter((item) => {
         const failure = failures[item.dropId];
         return !failure || failure.until < now;
@@ -341,7 +389,7 @@ export class DropsService {
 
   async claimAllForCampaign(campaignId) {
     const state = await this.store.get();
-    const campaign = state.drops.campaigns.find((item) => item.id === campaignId);
+    const campaign = campaignPool(state.drops).find((item) => item.id === campaignId);
     if (!campaign) return { claimed: 0 };
     let claimed = 0;
     for (const drop of campaign.drops) {

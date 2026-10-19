@@ -157,7 +157,7 @@ export function normalizeState(raw) {
     },
     farm: {
       enabled: Boolean(farm.enabled),
-      tabId: Number.isFinite(Number(farm.tabId)) ? Number(farm.tabId) : null,
+      tabId: farm.tabId != null && Number.isFinite(Number(farm.tabId)) ? Number(farm.tabId) : null,
       channelLogin: farm.channelLogin ? String(farm.channelLogin) : null,
       channelDisplayName: String(farm.channelDisplayName || ''),
       campaignId: farm.campaignId ? String(farm.campaignId) : null,

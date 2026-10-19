@@ -520,6 +520,10 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+.banner-sub.is-wrap {
+  white-space: normal;
+}
+
 .banner-actions {
   display: flex;
   align-items: center;
@@ -962,6 +966,49 @@ button:disabled {
 .mini-actions {
   display: flex;
   gap: 4px;
+}
+
+.available-note {
+  margin: -2px 2px 8px;
+  font-size: 10px;
+}
+
+.mini.is-farming {
+  border-color: rgba(67, 224, 141, 0.32);
+}
+
+.play-btn {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid rgba(67, 224, 141, 0.3);
+  border-radius: 8px;
+  background: var(--green-soft);
+  color: var(--green);
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.play-btn svg {
+  fill: currentColor;
+  stroke-width: 1.3;
+}
+
+.play-btn:hover:not(:disabled) {
+  background: rgba(67, 224, 141, 0.22);
+  border-color: rgba(67, 224, 141, 0.6);
+}
+
+.play-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.play-btn:disabled:not([aria-busy="true"]) {
+  color: var(--text-3);
+  background: var(--surface-2);
+  border-color: var(--border);
 }
 
 /* ---------- Points ---------- */

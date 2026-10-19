@@ -264,14 +264,209 @@ test('refresh stores a drops error when both dashboard and inventory fail', asyn
   assert.match(store.state.drops.error, /Не удалось получить данные|network down/);
 });
 
-test('fetch campaign details is limited and failure tolerant', async (t) => {
+test('fetch campaign details covers inventory and dashboard with the viewer login', async (t) => {
   const { service, gql } = makeService(t);
   await service.refresh({ claim: false });
   assert.equal(gql.calls.batch.length, 1);
-  assert.equal(gql.calls.batch[0].length, 3, 'one entry per in-progress campaign');
+  assert.equal(gql.calls.batch[0].length, 5, 'inventory and available campaigns, without duplicate ids');
   assert.deepEqual(
     gql.calls.batch[0].map((payload) => payload.operationName),
-    ['DropCampaignDetails', 'DropCampaignDetails', 'DropCampaignDetails'],
+    Array(5).fill('DropCampaignDetails'),
   );
   assert.equal(gql.calls.batch[0][0].variables.dropID, 'campaign-rust');
+  assert.ok(gql.calls.batch[0].every((payload) => payload.variables.channelLogin === 'karpenator'));
+});
+
+function rawCampaign(id, patch = {}) {
+  return {
+    id, name: `Campaign ${id}`, status: 'ACTIVE',
+    startAt: '2026-10-10T00:00:00Z', endAt: '2026-11-01T00:00:00Z',
+    game: { id: `game-${id}`, name: `Game ${id}`, slug: `game-${id}` },
+    self: { isAccountConnected: true },
+    allow: { isEnabled: false, channels: [] },
+    timeBasedDrops: [{
+      id: `reward-${id}`, requiredMinutesWatched: 60,
+      self: { currentMinutesWatched: 0, isClaimed: false },
+    }],
+    ...patch,
+  };
+}
+
+function dashboardEntry(campaign) {
+  const { timeBasedDrops, self, allow, ...metadata } = campaign;
+  return metadata;
+}
+
+function campaignApi({ available = [], started = [] } = {}) {
+  const calls = { batch: [], request: [] };
+  const failures = {};
+  const details = new Map([...available, ...started].map((campaign) => [campaign.id, campaign]));
+  return {
+    calls, failures, details,
+    async data(payload) {
+      if (failures[payload.operationName]) throw failures[payload.operationName];
+      if (payload.operationName === 'Inventory') {
+        return { currentUser: { inventory: { dropCampaignsInProgress: started } } };
+      }
+      return { currentUser: { dropCampaigns: [...started, ...available].map(dashboardEntry) } };
+    },
+    async batch(payloads) {
+      calls.batch.push(payloads);
+      if (failures.batch) throw failures.batch;
+      return payloads.map((payload) => ({ data: { user: { dropCampaign: details.get(payload.variables.dropID) || null } } }));
+    },
+    async request(payload) {
+      calls.request.push(payload);
+      const claimId = payload.variables.input.dropInstanceID;
+      for (const campaign of details.values()) {
+        for (const drop of campaign.timeBasedDrops) {
+          if (claimId === `user-1#${campaign.id}#${drop.id}`) drop.self.isClaimed = true;
+        }
+      }
+      return { data: { claimDropRewards: { status: 'SUCCESS' } } };
+    },
+  };
+}
+
+test('all dashboard campaigns are retained and hydrated beyond the old 30/40 limits', async (t) => {
+  const available = Array.from({ length: 46 }, (_, i) => rawCampaign(`available-${i}`));
+  const gql = campaignApi({ available });
+  const { service, store } = makeService(t, { gql });
+  await service.refresh({ claim: false });
+  assert.equal(store.state.drops.available.length, 46);
+  assert.ok(store.state.drops.available.every((campaign) => campaign.drops.length === 1));
+  assert.equal(store.state.drops.available[45].id, 'available-45');
+  assert.equal(gql.calls.batch.length, 4);
+  const payloads = gql.calls.batch.flat();
+  assert.equal(new Set(payloads.map((payload) => payload.variables.dropID)).size, 46);
+  assert.ok(gql.calls.batch.every((batch) => batch.length <= 15));
+  assert.ok(payloads.every((payload) => payload.variables.channelLogin === 'karpenator'));
+});
+
+test('available details include real rewards, account links and channel restrictions', async (t) => {
+  const available = [rawCampaign('restricted', {
+    self: { isAccountConnected: false },
+    allow: { isEnabled: true, channels: [{ login: 'only_streamer' }] },
+  })];
+  const { service, store } = makeService(t, { gql: campaignApi({ available }) });
+  await service.refresh({ claim: false });
+  const campaign = store.state.drops.available[0];
+  assert.equal(campaign.linked, false);
+  assert.equal(campaign.drops[0].requiredMinutes, 60);
+  assert.deepEqual(campaign.allowedChannels.map((channel) => channel.login), ['only_streamer']);
+});
+
+test('a detail batch failure never removes dashboard categories', async (t) => {
+  const available = Array.from({ length: 21 }, (_, i) => rawCampaign(`entry-${i}`));
+  const gql = campaignApi({ available });
+  const batch = gql.batch;
+  gql.batch = async (payloads) => {
+    if (payloads[0].variables.dropID === 'entry-0') throw new Error('batch temporarily unavailable');
+    return batch(payloads);
+  };
+  const { service, store } = makeService(t, { gql });
+  await service.refresh({ claim: false });
+  assert.equal(store.state.drops.available.length, 21);
+  assert.equal(store.state.drops.available.filter((campaign) => campaign.drops.length > 0).length, 6);
+});
+
+test('partial dashboard and inventory failures preserve the previous lists for the same viewer', async (t) => {
+  const gql = campaignApi({ available: [rawCampaign('new')], started: [rawCampaign('started')] });
+  const { service, store } = makeService(t, { gql });
+  await service.refresh({ claim: false });
+  gql.failures.ViewerDropsDashboard = new Error('dashboard offline');
+  await service.refresh({ claim: false });
+  assert.deepEqual(store.state.drops.available.map((campaign) => campaign.id), ['new']);
+  assert.ok(store.state.drops.error, 'a partial sync is not reported as a complete success');
+  delete gql.failures.ViewerDropsDashboard;
+  gql.failures.Inventory = new Error('inventory offline');
+  await service.refresh({ claim: false });
+  assert.deepEqual(store.state.drops.campaigns.map((campaign) => campaign.id), ['started']);
+  assert.deepEqual(store.state.drops.available.map((campaign) => campaign.id), ['new']);
+});
+
+test('partial sync does not reuse another viewer\'s cached campaigns', async (t) => {
+  const gql = campaignApi({ available: [rawCampaign('new')] });
+  const { service, store } = makeService(t, { gql });
+  await service.refresh({ claim: false });
+  store.state.user.id = 'another-viewer';
+  gql.failures.ViewerDropsDashboard = new Error('dashboard offline');
+  await service.refresh({ claim: false });
+  assert.deepEqual(store.state.drops.available, []);
+});
+
+test('claims cover available campaigns even before inventory starts listing them', async (t) => {
+  const campaign = rawCampaign('ready');
+  campaign.timeBasedDrops[0].self.currentMinutesWatched = 60;
+  const gql = campaignApi({ available: [campaign] });
+  const { service, store } = makeService(t, { gql });
+  await service.refresh({ claim: true });
+  assert.equal(store.state.drops.available[0].completed, true);
+  assert.equal(store.state.drops.available[0].drops[0].isClaimed, true);
+  assert.equal(store.state.stats.dropsClaimed, 1);
+  assert.equal(gql.calls.request.length, 1);
+  await service.refresh({ claim: true });
+  assert.equal(store.state.drops.available.length, 0, 'completed dashboard entries are not offered again');
+  assert.equal(gql.calls.request.length, 1);
+});
+
+test('missing category slugs are resolved from Twitch once per game and reused', async (t) => {
+  const game = { id: 'canonical-game', name: 'A Display Name That Is Not The Slug' };
+  const gql = campaignApi({ available: [rawCampaign('one', { game }), rawCampaign('two', { game })] });
+  const originalBatch = gql.batch;
+  const categoryQueries = [];
+  gql.batch = async (payloads) => {
+    if (payloads[0].operationName !== 'AutoPilotGameCategory') return originalBatch(payloads);
+    categoryQueries.push(...payloads);
+    return payloads.map(() => ({ data: { game: { id: game.id, slug: 'actual-twitch-category' } } }));
+  };
+  const { service, store, session, notify } = makeService(t, { gql });
+  await service.refresh({ claim: false });
+  assert.equal(categoryQueries.length, 1, 'two campaigns of the same game need one lookup');
+  assert.equal(categoryQueries[0].variables.name, game.name);
+  assert.ok(store.state.drops.available.every((campaign) => campaign.game.slug === 'actual-twitch-category'));
+  assert.ok(store.state.drops.available.every((campaign) => campaign.categoryUrl === 'https://www.twitch.tv/directory/category/actual-twitch-category?filter=drops'));
+  await service.refresh({ claim: false });
+  assert.equal(categoryQueries.length, 1, 'the canonical slug is cached, not repeatedly guessed');
+  const restarted = new DropsService({ store, gql, session, notify });
+  await restarted.refresh({ claim: false });
+  assert.equal(categoryQueries.length, 1, 'canonical slugs survive in the saved campaign data');
+});
+
+test('a failed category lookup keeps rewards and uses the corrected name fallback', async (t) => {
+  const game = { id: 'warhammer', name: 'Warhammer 40,000: Space Marine II' };
+  const gql = campaignApi({ available: [rawCampaign('warhammer', { game })] });
+  const originalBatch = gql.batch;
+  gql.batch = async (payloads) => {
+    if (payloads[0].operationName === 'AutoPilotGameCategory') throw new Error('temporarily unavailable');
+    return originalBatch(payloads);
+  };
+  const { service, store } = makeService(t, { gql });
+  await service.refresh({ claim: false });
+  assert.equal(store.state.drops.available.length, 1);
+  const campaign = store.state.drops.available[0];
+  assert.equal(campaign.drops.length, 1);
+  assert.equal(campaign.game.slug, '', 'a guessed slug is not treated as authoritative metadata');
+  assert.equal(campaign.categoryUrl, 'https://www.twitch.tv/directory/category/warhammer-40-000-space-marine-ii?filter=drops');
+});
+
+test('an existing canonical slug needs no extra category query', async (t) => {
+  const game = { id: 'official', name: 'Old Game Name', slug: 'current-twitch-slug' };
+  const gql = campaignApi({ available: [rawCampaign('official', { game })] });
+  const { service, store } = makeService(t, { gql });
+  await service.refresh({ claim: false });
+  assert.equal(gql.calls.batch.flat().some((payload) => payload.operationName === 'AutoPilotGameCategory'), false);
+  assert.equal(store.state.drops.available[0].categoryUrl, 'https://www.twitch.tv/directory/category/current-twitch-slug?filter=drops');
+});
+
+test('a slug belonging to a different game id is not accepted', async (t) => {
+  const game = { id: 'arena', name: 'Arena Breakout: Infinite' };
+  const gql = campaignApi({ available: [rawCampaign('arena', { game })] });
+  const originalBatch = gql.batch;
+  gql.batch = async (payloads) => payloads[0].operationName === 'AutoPilotGameCategory'
+    ? [{ data: { game: { id: 'another-game', slug: 'wrong-category' } } }]
+    : originalBatch(payloads);
+  const { service, store } = makeService(t, { gql });
+  await service.refresh({ claim: false });
+  assert.equal(store.state.drops.available[0].categoryUrl, 'https://www.twitch.tv/directory/category/arena-breakout-infinite?filter=drops');
 });

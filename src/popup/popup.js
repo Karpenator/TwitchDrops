@@ -5,7 +5,7 @@ import {
   formatTimeLeft,
 } from '../shared/time.js';
 import { formatPoints } from '../shared/points-model.js';
-import { sanitizeImageUrl } from '../shared/drops-model.js';
+import { campaignCategoryUrl, campaignPool, sanitizeImageUrl } from '../shared/drops-model.js';
 import { INTERVAL_OPTIONS } from '../shared/settings.js';
 import { normalizeLogin } from '../shared/twitch-url.js';
 import { DROPS_URL, EXTENSION_VERSION } from '../shared/constants.js';
@@ -127,7 +127,8 @@ let busy = false;
 let toastTimer = null;
 let reloadTimer = null;
 let autoRefreshDone = false;
-let actionLocks = new Set();
+const actionLocks = new Set();
+let playingCampaignId = null;
 
 // ---------------------------------------------------------------------------
 // Messaging
@@ -221,7 +222,7 @@ function allCampaigns() {
 }
 
 function totalReady() {
-  return allCampaigns().reduce((sum, campaign) => sum + (campaign.claimableCount || 0), 0);
+  return campaignPool(state?.drops).reduce((sum, campaign) => sum + (campaign.claimableCount || 0), 0);
 }
 
 function totalPoints() {
@@ -289,19 +290,21 @@ function farmBanner() {
   const names = farmCampaignNames(farm);
   const simultaneous = names.length;
   const title =
-    simultaneous > 1
-      ? `Автоферма · ${simultaneous} ${plural(simultaneous, 'кампания', 'кампании', 'кампаний')} сразу`
-      : farm.enabled
-        ? 'Автоферма работает'
-        : 'Автоферма запускается';
-  const sub = farm.channelLogin
+    isError
+      ? 'Автоферма · нужно внимание'
+      : simultaneous > 1
+        ? `Автоферма · ${simultaneous} ${plural(simultaneous, 'кампания', 'кампании', 'кампаний')} сразу`
+        : farm.enabled
+          ? 'Автоферма работает'
+          : 'Автоферма запускается';
+  const sub = farm.error || (farm.channelLogin
     ? `${farm.channelDisplayName || farm.channelLogin} · ${farm.gameName || 'Twitch'}${names.length ? ` · ${names.join(' + ')}` : ''}`
-    : farm.error || 'Ищем канал с активными дропсами…';
+    : 'Ищем канал с активными дропсами…');
   return `<div class="banner ${isError ? 'is-warn' : 'is-farm'}">
     <span class="pulse" style="${isError ? 'background:var(--amber);box-shadow:none' : ''}"></span>
     <div class="banner-main">
       <div class="banner-title">${esc(title)}</div>
-      <div class="banner-sub">${esc(sub)}</div>
+      <div class="banner-sub${isError ? ' is-wrap' : ''}">${esc(sub)}</div>
       <div class="banner-actions">
         ${farm.enabled ? `<button type="button" class="btn btn-sm btn-ghost" data-action="farm-skip">Сменить канал</button>` : ''}
         ${farm.channelLogin ? `<button type="button" class="btn btn-sm btn-ghost" data-action="open-channel" data-login="${attr(farm.channelLogin)}">Открыть</button>` : ''}
@@ -421,16 +424,30 @@ function campaignCard(campaign) {
 
 function miniCampaign(campaign) {
   const title = campaign.game?.name || 'Twitch';
-  const upcoming = campaign.status === 'UPCOMING' || campaign.upcoming;
-  return `<div class="mini">
+  const name = campaign.name || title;
+  const upcoming = campaign.upcoming || (campaign.startsAt && campaign.startsAt > Date.now());
+  const unavailable = upcoming
+    ? 'Кампания ещё не началась'
+    : campaign.linked === false
+      ? 'Сначала привяжите игровой аккаунт на Twitch'
+      : campaign.completed
+        ? 'Все награды уже получены'
+        : campaign.expired || (campaign.endsAt && campaign.endsAt <= Date.now())
+          ? 'Кампания закончилась'
+          : '';
+  const loading = playingCampaignId === campaign.id;
+  const playTitle = unavailable || `Play — смотреть кампанию «${name}»`;
+  const farming = state.farm?.enabled && state.farm.campaignIds?.includes(campaign.id);
+  return `<div class="mini${farming ? ' is-farming' : ''}">
     ${thumb(campaign.imageUrl, title, true)}
     <div class="mini-info">
-      <div class="mini-title">${esc(title)}</div>
-      <div class="mini-sub">${esc(upcoming ? `старт ${formatDateTime(campaign.startsAt)}` : formatTimeLeft(campaign.endsAt))}</div>
+      <div class="mini-title" title="${attr(title)}">${esc(title)}</div>
+      ${name !== title ? `<div class="mini-sub" title="${attr(name)}">${esc(name)}</div>` : ''}
+      <div class="mini-sub">${esc(upcoming ? `старт ${formatDateTime(campaign.startsAt)}` : formatTimeLeft(campaign.endsAt))}${farming ? ' · фармится' : ''}</div>
     </div>
     <div class="mini-actions">
-      <button type="button" class="btn btn-sm btn-ghost" data-action="open-url" data-url="${attr(campaign.categoryUrl)}">Категория</button>
-      <button type="button" class="btn btn-sm btn-ghost" data-action="open-twitch">${icon('external', 11)}</button>
+      <button type="button" class="play-btn" data-action="farm-play" data-campaign-id="${attr(campaign.id)}" title="${attr(playTitle)}" aria-label="${attr(playTitle)}" aria-busy="${loading}" ${unavailable || playingCampaignId ? 'disabled' : ''}>${loading ? '<span class="spinner"></span>' : icon('play', 16)}</button>
+      <button type="button" class="btn btn-sm btn-ghost" data-action="open-url" data-url="${attr(campaignCategoryUrl(campaign))}" title="Открыть категорию на Twitch" aria-label="${attr(`Открыть категорию ${title} на Twitch`)}">${icon('external', 11)}</button>
     </div>
   </div>`;
 }
@@ -455,9 +472,9 @@ function renderDrops() {
   const farm = farmBanner();
   const cards = campaigns.map(campaignCard).join('');
 
-  const available = (state.drops?.available || []).slice(0, 6);
+  const available = state.drops?.available || [];
   const availableBlock = available.length
-    ? `${sectionHead('Доступные кампании', `${available.length}`)}<div class="mini-list">${available.map(miniCampaign).join('')}</div>`
+    ? `${sectionHead('Доступные кампании', `${available.length}`)}<p class="section-note available-note">▶ запускает автоферму или переключает её на выбранную кампанию.</p><div class="mini-list">${available.map(miniCampaign).join('')}</div>`
     : '';
 
   const body = campaigns.length
@@ -906,7 +923,7 @@ els.master.addEventListener('change', async () => {
 
 document.addEventListener('click', async (event) => {
   const actionEl = event.target.closest('[data-action]');
-  if (!actionEl) return;
+  if (!actionEl || actionEl.disabled) return;
   const action = actionEl.dataset.action;
   if (actionLocks.has(`click:${action}`)) return;
 
@@ -996,6 +1013,20 @@ document.addEventListener('click', async (event) => {
       const login = actionEl.dataset.login || '';
       if (!login) break;
       await runAction('REMOVE_CHANNEL', { login }, { success: `Канал ${login} убран` });
+      break;
+    }
+
+    case 'farm-play': {
+      const campaignId = actionEl.dataset.campaignId || '';
+      if (!campaignId || playingCampaignId) break;
+      playingCampaignId = campaignId;
+      render();
+      try {
+        await runAction('FARM_PLAY', { campaignId }, { success: 'Просмотр выбранной кампании запущен' });
+      } finally {
+        playingCampaignId = null;
+        render();
+      }
       break;
     }
 

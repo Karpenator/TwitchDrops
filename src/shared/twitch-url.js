@@ -92,13 +92,28 @@ export function channelUrl(login) {
   return safe ? `https://www.twitch.tv/${safe}` : 'https://www.twitch.tv/';
 }
 
-export function categoryUrl(slug) {
-  const safe = String(slug || '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, '');
-  return safe
-    ? `https://www.twitch.tv/directory/category/${safe}`
+/** Best-effort name fallback; a canonical slug returned by Twitch takes priority. */
+export function categorySlug(value) {
+  const name = String(value || '').trim().toLowerCase();
+  // Do not rewrite an existing Twitch slug (including consecutive hyphens).
+  if (/^[a-z0-9]+(?:-+[a-z0-9]+)*$/.test(name)) return name;
+  return name
+    .replace(/&(?:amp|#0*38|#x0*26);/gi, '&')
+    .replace(/&(?:nbsp|#0*160|#x0*a0);/gi, ' ')
+    .replace(/&(?:apos|#0*39|#x0*27);/gi, "'")
+    .replace(/[©®™]/g, '')
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .replace(/&/g, ' and ')
+    .replace(/['’ʼ`]/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+export function categoryUrl(slugOrName, { dropsOnly = false } = {}) {
+  const slug = categorySlug(slugOrName);
+  return slug
+    ? `https://www.twitch.tv/directory/category/${encodeURIComponent(slug)}${dropsOnly ? '?filter=drops' : ''}`
     : 'https://www.twitch.tv/directory';
 }
 

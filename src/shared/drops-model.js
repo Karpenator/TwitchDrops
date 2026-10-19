@@ -114,6 +114,15 @@ export function mergeCampaignData(inventoryCampaign, detailsCampaign) {
   for (const key of ['game', 'allow', 'self', 'accountLinkURL', 'status', 'startAt', 'endAt']) {
     if (merged[key] == null && detailsCampaign[key] != null) merged[key] = detailsCampaign[key];
   }
+  // Inventory often has only a partial game/self object. Do not lose the
+  // category slug or account-link/allowlist metadata from the detail query.
+  for (const key of ['game', 'allow', 'self']) {
+    if (!detailsCampaign[key] || !inventoryCampaign[key]) continue;
+    merged[key] = { ...detailsCampaign[key], ...inventoryCampaign[key] };
+    for (const [field, value] of Object.entries(detailsCampaign[key])) {
+      if (merged[key][field] == null) merged[key][field] = value;
+    }
+  }
   const detailDrops = new Map(
     arr(detailsCampaign.timeBasedDrops)
       .map((drop) => [text(drop?.id), drop])
@@ -141,7 +150,7 @@ export function mergeCampaignData(inventoryCampaign, detailsCampaign) {
       ]) {
         if (combined[key] == null) combined[key] = detail[key];
       }
-      if (drop.self == null && detail.self != null) combined.self = detail.self;
+      if (detail.self) combined.self = { ...detail.self, ...drop.self };
       return combined;
     });
     for (const [id, detail] of detailDrops) {
@@ -289,8 +298,13 @@ export function normalizeCampaign(rawCampaign, { userId = '', now = Date.now() }
     completed,
     drops,
     ...stats,
-    categoryUrl: categoryUrl(gameSlug || gameName),
+    categoryUrl: campaignCategoryUrl(campaignBase),
   };
+}
+
+/** Rebuild links from game metadata, including snapshots with an old broken URL. */
+export function campaignCategoryUrl(campaign) {
+  return categoryUrl(text(campaign?.game?.slug) || text(campaign?.game?.name), { dropsOnly: true });
 }
 
 export function computeCampaignStats(drops) {
@@ -389,20 +403,39 @@ export function isClaimResponseSuccessful(payload) {
 
 /**
  * Campaign suitable for the real-tab auto-farm: active, linked, has rewards
- * left and has a category we can search.
+ * left to watch and has a category we can search. Fully earned rewards stay
+ * claimable but must not keep the farm watching a finished game.
  */
 export function isFarmableCampaign(campaign, now = Date.now()) {
   if (!campaign || !campaign.active || campaign.linked === false) return false;
-  if (campaign.completed) return false;
+  if (campaign.completed || campaign.expired) return false;
+  if (campaign.startsAt && campaign.startsAt > now) return false;
+  if (campaign.endsAt && campaign.endsAt <= now) return false;
   if (!campaign.game?.name) return false;
-  if (!campaign.allowedChannels?.length && !campaign.game?.slug) return false;
+  // The directory can resolve a game by name when Twitch omits its slug.
+  if (!campaign.allowedChannels?.length && !campaign.game?.slug &&
+      !campaign.game?.id && campaign.game.name === 'Twitch') return false;
   return arr(campaign.drops).some(
     (drop) =>
       !drop.isClaimed &&
+      !drop.claimable &&
       drop.requiredMinutes > 0 &&
+      drop.currentMinutes < drop.requiredMinutes &&
       drop.preconditionsMet !== false &&
+      (!drop.startsAt || drop.startsAt <= now) &&
       (!drop.endsAt || drop.endsAt > now),
   );
+}
+
+/** Inventory wins duplicate ids; unstarted dashboard campaigns also need a turn. */
+export function campaignPool(drops) {
+  const byId = new Map();
+  for (const campaign of [...arr(drops?.campaigns), ...arr(drops?.available)]) {
+    if (campaign?.id && !byId.has(String(campaign.id))) {
+      byId.set(String(campaign.id), campaign);
+    }
+  }
+  return [...byId.values()];
 }
 
 export function pickFarmCampaign(campaigns, now = Date.now()) {
@@ -503,19 +536,20 @@ export function groupFarmableCampaigns(campaigns, now = Date.now()) {
  * soonest (safer for limited-time drops), `progress` starts with the shortest
  * remaining watch time (faster rewards).
  */
-export function pickFarmGroup(campaigns, now = Date.now(), { priority = 'deadline' } = {}) {
-  const groups = groupFarmableCampaigns(campaigns, now);
-  if (groups.length === 0) return null;
+export function sortFarmGroups(groups, { priority = 'deadline' } = {}) {
   const byDeadline = (a, b) =>
     a.endsAt - b.endsAt ||
     a.remainingMinutes - b.remainingMinutes ||
     a.key.localeCompare(b.key);
-  groups.sort(
+  return [...arr(groups)].sort(
     priority === 'progress'
       ? (a, b) => a.remainingMinutes - b.remainingMinutes || byDeadline(a, b)
       : byDeadline,
   );
-  return groups[0];
+}
+
+export function pickFarmGroup(campaigns, now = Date.now(), options = {}) {
+  return sortFarmGroups(groupFarmableCampaigns(campaigns, now), options)[0] || null;
 }
 
 /** Sum of watch marks of every campaign in a simultaneously watched group. */

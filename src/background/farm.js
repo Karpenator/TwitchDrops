@@ -1,19 +1,19 @@
 import { queries, directoryFallbackPayload } from '../shared/constants.js';
 import {
   campaignGameKey,
-  farmGroupFromIds,
+  campaignPool,
+  groupFarmableCampaigns,
   groupWatchMark,
   isFarmableCampaign,
   pickCandidate,
-  pickFarmGroup,
+  sortFarmGroups,
 } from '../shared/drops-model.js';
 import { channelLoginFromUrl, channelUrl } from '../shared/twitch-url.js';
 import { describeError } from '../shared/errors.js';
 
 const STALE_PROGRESS_MS = 20 * 60_000;
-const DROPS_STALE_MS = 5 * 60_000;
+const DROPS_STALE_MS = 60_000;
 const SWITCH_COOLDOWN_MS = 3 * 60_000;
-const MAX_ACL_CHANNELS = 20;
 const STREAM_BATCH_SIZE = 10;
 
 function chunk(list, size) {
@@ -64,12 +64,12 @@ export class FarmService {
     this.tabsApi = tabsApi || chrome.tabs;
     this.onUpdate = onUpdate;
     this.logger = logger;
-    this.inflight = null;
+    this.queue = Promise.resolve();
   }
 
   async streamInfos(logins) {
     const result = new Map();
-    const valid = [...new Set(logins.filter(Boolean))].slice(0, MAX_ACL_CHANNELS);
+    const valid = [...new Set(logins.filter(Boolean))];
     for (const batch of chunk(valid, STREAM_BATCH_SIZE)) {
       const responses = await this.gql
         .batch(batch.map((login) => queries.streamInfo(login)))
@@ -100,13 +100,14 @@ export class FarmService {
   }
 
   async #directoryCandidates(campaign) {
-    const slug = campaign?.game?.slug;
-    if (!slug) return [];
+    const slug = campaign?.game?.slug || '';
+    if (!slug && !campaign?.game?.name) return [];
     let response;
     try {
+      const fallback = directoryFallbackPayload(campaign.game.name, slug);
       response = await this.gql.request(
-        queries.directoryGame(campaign.game.name, slug),
-        { rawFallback: directoryFallbackPayload(campaign.game.name, slug) },
+        slug ? queries.directoryGame(campaign.game.name, slug) : fallback,
+        { rawFallback: fallback },
       );
     } catch (error) {
       this.logger.warn?.('[TwitchAutoPilot] directory query failed', error);
@@ -125,8 +126,8 @@ export class FarmService {
         login,
         displayName: broadcaster?.displayName || login,
         viewers: Math.max(0, Number(node?.viewersCount) || 0),
-        gameName: String(game.displayName || game.name || ''),
-        gameSlug: String(game.slug || slug),
+        gameName: String(game.displayName || game.name || campaign.game.name || ''),
+        gameSlug: String(game.slug || payload?.data?.game?.slug || slug),
         isLive: true,
       };
       if (!gameMatches(campaign, candidate)) continue;
@@ -170,12 +171,13 @@ export class FarmService {
    * (Twitch credits all campaigns live on a channel), then apply the chosen
    * viewer strategy within that best-overlap set.
    */
-  #choose(group, candidates, excludeLogin, { hardExclude = false } = {}) {
+  #choose(group, candidates, excludeLogin, { hardExclude = false, requiredCampaignId = '' } = {}) {
     const settings = this.store.state?.settings || {};
     const scored = [];
     for (const candidate of candidates) {
       const eligible = this.#eligibleCampaigns(group.campaigns, candidate.login, candidate);
       if (eligible.length === 0) continue;
+      if (requiredCampaignId && !eligible.some((campaign) => campaign.id === requiredCampaignId)) continue;
       scored.push({ ...candidate, campaigns: eligible });
     }
     const pool =
@@ -192,6 +194,7 @@ export class FarmService {
     if (!choice) return null;
     const campaigns = [...choice.campaigns].sort(
       (a, b) =>
+        Number(b.id === requiredCampaignId) - Number(a.id === requiredCampaignId) ||
         (a.endsAt || Number.MAX_SAFE_INTEGER) - (b.endsAt || Number.MAX_SAFE_INTEGER) ||
         (a.remainingMinutes || 0) - (b.remainingMinutes || 0),
     );
@@ -219,24 +222,96 @@ export class FarmService {
     campaignIds = [],
     allowOtherGroup = true,
     hardExclude = false,
+    requiredCampaignId = '',
   } = {}) {
     const state = await this.store.get();
-    const now = Date.now();
-    let group = null;
-    if (campaignIds && campaignIds.length > 0) {
-      group = farmGroupFromIds(state.drops.campaigns, campaignIds, now);
+    const groups = sortFarmGroups(groupFarmableCampaigns(campaignPool(state.drops)), {
+      priority: state.settings.farmPriority,
+    });
+    const preferred = groups.find((group) =>
+      group.campaigns.some((campaign) => campaignIds.includes(campaign.id)),
+    );
+    // Check the requested/current game first, then every other group in order.
+    // One offline category must not starve all the categories after it.
+    const ordered = preferred ? [preferred, ...groups.filter((group) => group !== preferred)] : groups;
+    const eligibleGroups = allowOtherGroup ? ordered : preferred ? [preferred] : [];
+    for (const group of eligibleGroups) {
+      const candidates = await this.#collectCandidates(group);
+      const target = this.#choose(group, candidates, excludeLogin, { hardExclude, requiredCampaignId });
+      if (target) return target;
     }
-    if (!group && allowOtherGroup) {
-      group = pickFarmGroup(state.drops.campaigns, now, {
-        priority: state.settings.farmPriority,
-      });
-    }
-    if (!group) return null;
-    const candidates = await this.#collectCandidates(group);
-    return this.#choose(group, candidates, excludeLogin, { hardExclude });
+    return null;
   }
 
-  async start() {
+  /** Serialize navigation: an alarm must not undo a Play/Stop/Skip request. */
+  #run(operation) {
+    const result = this.queue.then(operation, operation);
+    this.queue = result.catch(() => {});
+    return result;
+  }
+
+  play(campaignId) {
+    return this.#run(() => this.#play(String(campaignId || '')));
+  }
+
+  /** Force the selected campaign, including its channel restrictions. */
+  async #play(campaignId) {
+    let state = await this.store.get();
+    let campaign = campaignPool(state.drops).find((item) => item.id === campaignId);
+    if (!campaign) return { ok: false, message: 'Кампания не найдена. Обновите список.' };
+    if (campaign.upcoming || (campaign.startsAt && campaign.startsAt > Date.now())) {
+      return { ok: false, message: 'Кампания ещё не началась' };
+    }
+    if (campaign.linked === false) {
+      return { ok: false, message: 'Сначала привяжите игровой аккаунт на странице кампаний Twitch' };
+    }
+    if (campaign.completed) return { ok: false, message: 'Все награды кампании уже получены' };
+    if (campaign.expired || (campaign.endsAt && campaign.endsAt <= Date.now())) {
+      return { ok: false, message: 'Кампания уже закончилась' };
+    }
+
+    // Old stored dashboards (or failed detail batches) may lack reward data.
+    // Fetch real metadata instead of inventing an unrestricted watch target.
+    if (!campaign.drops?.length || Date.now() - state.drops.lastSync > DROPS_STALE_MS) {
+      await this.drops.refresh({ claim: false });
+      state = await this.store.get();
+      campaign = campaignPool(state.drops).find((item) => item.id === campaignId);
+    }
+    if (!campaign?.drops?.length) {
+      return { ok: false, message: 'Не удалось загрузить награды кампании. Обновите список и попробуйте снова.' };
+    }
+    if (!isFarmableCampaign(campaign)) {
+      return { ok: false, message: 'В этой кампании сейчас нет доступных для просмотра наград' };
+    }
+    const target = await this.pickTarget({
+      campaignIds: [campaignId],
+      allowOtherGroup: false,
+      requiredCampaignId: campaignId,
+    });
+    if (!target) {
+      return { ok: false, message: 'Для выбранной кампании сейчас нет подходящих каналов в эфире' };
+    }
+    const wasEnabled = state.settings.autoFarm;
+    await this.store.update((current) => {
+      current.settings.autoFarm = true;
+      return current;
+    });
+    const tabId = await this.#applyTarget(target, { reuseTabId: state.farm.tabId });
+    if (tabId == null) {
+      await this.store.update((current) => {
+        current.settings.autoFarm = wasEnabled;
+        return current;
+      });
+      return { ok: false, message: 'Не удалось открыть вкладку Twitch' };
+    }
+    return { ok: true, channel: target.channel };
+  }
+
+  start() {
+    return this.#run(() => this.#start());
+  }
+
+  async #start() {
     await this.store.update((state) => {
       state.farm.enabled = true;
       state.farm.startedAt = state.farm.startedAt || Date.now();
@@ -244,11 +319,15 @@ export class FarmService {
       state.settings.autoFarm = true;
       return state;
     });
-    await this.tick();
+    await this.#tick();
     return this.store.get();
   }
 
-  async stop({ closeTab = true, reason = null } = {}) {
+  stop(options = {}) {
+    return this.#run(() => this.#stop(options));
+  }
+
+  async #stop({ closeTab = true, reason = null } = {}) {
     const state = await this.store.get();
     const tabId = state.farm.tabId;
     await this.store.update((current) => {
@@ -286,7 +365,11 @@ export class FarmService {
     return this.store.get();
   }
 
-  async handleTabRemoved(tabId) {
+  handleTabRemoved(tabId) {
+    return this.#run(() => this.#handleTabRemoved(tabId));
+  }
+
+  async #handleTabRemoved(tabId) {
     const state = await this.store.get();
     if (state.farm.tabId !== tabId) return;
     await this.store.update((current) => {
@@ -318,42 +401,27 @@ export class FarmService {
     this.onUpdate?.();
   }
 
-  async tick() {
-    if (this.inflight) return this.inflight;
-    this.inflight = this.#tick().finally(() => {
-      this.inflight = null;
-    });
-    return this.inflight;
+  tick(options = {}) {
+    return this.#run(() => this.#tick(options));
   }
 
-  /**
-   * Campaigns of the currently watched group that are still farmable and
-   * belong to the same game, extended with newly discovered campaigns of that
-   * game (they will progress on the same channel anyway).
-   */
-  #groupFromFarm(state, now) {
+  #currentGameKey(state) {
     const ids = state.farm.campaignIds?.length
       ? state.farm.campaignIds
-      : state.farm.campaignId
-        ? [state.farm.campaignId]
-        : [];
-    const base = farmGroupFromIds(state.drops.campaigns, ids, now);
-    if (!base || !state.farm.channelLogin) return base;
-    const login = state.farm.channelLogin;
-    const extra = state.drops.campaigns.filter(
-      (campaign) =>
-        isFarmableCampaign(campaign, now) &&
-        campaignGameKey(campaign) === base.key &&
-        !base.campaigns.some((item) => item.id === campaign.id) &&
-        isAllowedChannel(campaign, login),
+      : [state.farm.campaignId];
+    const campaign = campaignPool(state.drops).find((item) => ids.includes(item.id));
+    return campaignGameKey(campaign || { game: { slug: state.farm.gameSlug, name: state.farm.gameName } });
+  }
+
+  /** All still-watchable campaigns of the current game on the current channel. */
+  #groupFromFarm(state, now) {
+    const key = this.#currentGameKey(state);
+    const group = groupFarmableCampaigns(campaignPool(state.drops), now).find((item) => item.key === key);
+    if (!group) return null;
+    const campaigns = group.campaigns.filter((campaign) =>
+      isAllowedChannel(campaign, state.farm.channelLogin),
     );
-    if (extra.length === 0) return base;
-    const campaigns = [...base.campaigns, ...extra].sort(
-      (a, b) =>
-        (a.endsAt || Number.MAX_SAFE_INTEGER) - (b.endsAt || Number.MAX_SAFE_INTEGER) ||
-        (a.remainingMinutes || 0) - (b.remainingMinutes || 0),
-    );
-    return { ...base, campaigns };
+    return campaigns.length ? { ...group, campaigns } : null;
   }
 
   /** Store the chosen target and make sure its tab exists and is muted. */
@@ -396,17 +464,18 @@ export class FarmService {
     return tabId;
   }
 
-  async #tick() {
+  async #tick({ refreshDrops = true } = {}) {
     let state = await this.store.get();
     if (!state.settings.autoFarm) {
       if (state.farm.tabId != null || state.farm.enabled) {
-        await this.stop({ closeTab: true });
+        await this.#stop({ closeTab: true });
       }
       return this.store.get();
     }
 
-    // Give the drops inventory a chance to appear/refresh while starting.
-    if (Date.now() - state.drops.lastSync > DROPS_STALE_MS) {
+    // A running farm should not wait for a long user-configured sync interval.
+    // Callers that just refreshed/claimed already have authoritative local state.
+    if (refreshDrops && Date.now() - state.drops.lastSync > DROPS_STALE_MS) {
       try {
         await this.drops.refresh({ claim: true });
       } catch (error) {
@@ -465,17 +534,21 @@ export class FarmService {
     if (!group) {
       // The current group finished or its channel stopped being eligible:
       // pick the next game group (rotation through every campaign).
-      target = await this.pickTarget({ excludeLogin: state.farm.channelLogin || '' });
+      const key = this.#currentGameKey(state);
+      target = await this.pickTarget({
+        excludeLogin: state.farm.channelLogin || '',
+        campaignIds: campaignPool(state.drops)
+          .filter((campaign) => campaignGameKey(campaign) === key)
+          .map((campaign) => campaign.id),
+      });
     } else if (stale && now - state.farm.lastSwitchAt > SWITCH_COOLDOWN_MS) {
       target = await this.pickTarget({
         excludeLogin: state.farm.channelLogin || '',
         campaignIds: groupIds,
+        hardExclude: true,
       });
       if (!target) {
-        target = await this.pickTarget({ excludeLogin: state.farm.channelLogin || '' });
-      }
-      if (target && target.channel.login === state.farm.channelLogin) {
-        target = null; // No alternative channel — reset the timer and keep watching.
+        // No alternative channel in any group — keep watching and retry later.
         await this.store.update((current) => {
           current.farm.lastProgressAt = now;
           return current;
@@ -491,6 +564,10 @@ export class FarmService {
     if (!group) {
       await this.store.update((current) => {
         current.farm.error = 'Нет доступных каналов с дропсами. Попробуем снова через пару минут.';
+        current.farm.campaignId = null;
+        current.farm.campaignName = '';
+        current.farm.campaignIds = [];
+        current.farm.campaignNames = [];
         return current;
       });
       this.onUpdate?.();
@@ -525,6 +602,9 @@ export class FarmService {
       await this.store.update((current) => {
         current.farm.error = healthError;
         current.farm.enabled = true;
+        current.farm.tabId = tabId;
+        current.farm.campaignId = group.campaigns[0].id;
+        current.farm.campaignName = group.campaigns[0].name;
         current.farm.campaignIds = group.campaigns.map((campaign) => campaign.id);
         current.farm.campaignNames = group.campaigns.map((campaign) => campaign.name);
         return current;
@@ -598,7 +678,11 @@ export class FarmService {
     }
   }
 
-  async skip() {
+  skip() {
+    return this.#run(() => this.#skip());
+  }
+
+  async #skip() {
     const state = await this.store.get();
     if (!state.farm.enabled) {
       return { ok: false, message: 'Автоферма выключена' };

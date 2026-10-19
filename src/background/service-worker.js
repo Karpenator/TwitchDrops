@@ -232,12 +232,24 @@ async function scheduleAlarms() {
   }
 }
 
+/** Re-evaluate rotation immediately after a sync/claim, without re-fetching it. */
+async function reconcileFarm() {
+  if ((await store.get()).settings.autoFarm) {
+    await farm.tick({ refreshDrops: false });
+  }
+}
+
+async function refreshDropsAndFarm() {
+  await drops.refresh({ claim: true });
+  await reconcileFarm();
+}
+
 async function refreshScopes(scope = 'all') {
   const errors = {};
   const tasks = [];
   if (scope === 'all' || scope === 'drops') {
     tasks.push(
-      drops.refresh({ claim: true }).catch((error) => {
+      refreshDropsAndFarm().catch((error) => {
         errors.drops = describeError(error);
       }),
     );
@@ -269,19 +281,16 @@ async function initialSync() {
     return;
   }
   await refreshScopes('all');
-  const state = await store.get();
-  if (state.settings.autoFarm) await farm.tick();
 }
 
 async function setSettings(patch) {
-  const before = await store.get();
-  const previousAutoFarm = before.settings.autoFarm;
+  const before = { ...(await store.get()).settings };
+  const previousAutoFarm = before.autoFarm;
   await store.update((state) => {
     state.settings = applySettingsPatch(state.settings, patch);
     return state;
   });
   const after = await store.get();
-  await scheduleAlarms();
 
   if (after.settings.autoFarm) {
     if (!previousAutoFarm) {
@@ -289,18 +298,19 @@ async function setSettings(patch) {
     } else {
       await farm.applyMuteSetting();
     }
-  } else if (previousAutoFarm) {
+  } else if (previousAutoFarm || patch.autoFarm === false) {
     await farm.stop({ closeTab: true });
   }
+  await scheduleAlarms();
 
   notifyStateChanged();
   broadcastGuardConfig().catch(() => {});
 
   // Turning a claim toggle on should show results immediately.
-  if (!before.settings.autoClaimDrops && after.settings.autoClaimDrops) {
-    drops.refresh({ claim: true }).catch(() => {});
+  if (!before.autoClaimDrops && after.settings.autoClaimDrops) {
+    refreshDropsAndFarm().catch(() => {});
   }
-  if (!before.settings.autoClaimPoints && after.settings.autoClaimPoints) {
+  if (!before.autoClaimPoints && after.settings.autoClaimPoints) {
     points.refresh({ claim: true }).catch(() => {});
   }
   return { settings: after.settings };
@@ -378,10 +388,10 @@ async function handleContentMessage(message, sender) {
     }
     case 'PAGE_DROP_PROGRESS': {
       const state = await store.get();
-      if (state.settings.autoClaimDrops && !dropProgressTimer) {
+      if ((state.settings.autoClaimDrops || state.settings.autoFarm) && !dropProgressTimer) {
         dropProgressTimer = setTimeout(() => {
           dropProgressTimer = null;
-          drops.refresh({ claim: true }).catch(() => {});
+          refreshDropsAndFarm().catch(() => {});
         }, 4_000);
       }
       return { ok: true };
@@ -434,12 +444,14 @@ async function handleMessage(message, sender) {
       const dropId = String(message.dropId || '');
       if (!campaignId || !dropId) return { ok: false, error: 'Не указана награда' };
       await drops.claimDrop(campaignId, dropId, { manual: true });
+      await reconcileFarm();
       scheduleBadge();
       return { ...(await statePayload()) };
     }
 
     case 'CLAIM_ALL_DROPS': {
       const result = await drops.claimAllReady();
+      await reconcileFarm();
       scheduleBadge();
       return { ...(await statePayload()), result };
     }
@@ -515,6 +527,18 @@ async function handleMessage(message, sender) {
       await setSettings({ autoFarm: false });
       return { ...(await statePayload()) };
 
+    case 'FARM_PLAY': {
+      const campaignId = String(message.campaignId || '');
+      if (!campaignId) return { ok: false, error: 'Не указана кампания' };
+      const result = await farm.play(campaignId);
+      if (!result.ok) {
+        return { ok: false, error: result.message || 'Не удалось запустить просмотр' };
+      }
+      await scheduleAlarms();
+      notifyStateChanged();
+      return { ...(await statePayload()) };
+    }
+
     case 'FARM_SKIP': {
       const result = await farm.skip();
       return { ...(await statePayload()), warning: result.ok ? null : result.message };
@@ -555,11 +579,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  ensureReady()
+  return ensureReady()
     .then(async () => {
       switch (alarm.name) {
         case ALARMS.drops:
-          await drops.refresh({ claim: true });
+          await refreshDropsAndFarm();
           break;
         case ALARMS.points:
           await points.refresh({ claim: true });

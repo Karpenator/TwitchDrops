@@ -31,7 +31,7 @@ test('GET_STATE returns a coherent demo snapshot', async () => {
   assert.equal(response.openTabs.length, 2);
   assert.equal(response.state.session.authenticated, true);
   assert.equal(response.state.drops.campaigns.length, 4);
-  assert.equal(response.state.drops.available.length, 2);
+  assert.equal(response.state.drops.available.length, 8);
   assert.equal(response.state.points.channels.shroud.availableClaimId, 'demo-claim-shroud');
   assert.equal(response.state.points.tracked.length, 2);
   assert.equal(response.state.history.length, 4);
@@ -190,4 +190,23 @@ test('unknown actions fail cleanly and open handlers accept only Twitch', async 
   assert.equal(opened.length, 2);
   assert.match(opened[0][0], /twitch\.tv\/shroud$/);
   assert.match(opened[1][0], /twitch\.tv\/drops\/campaigns$/);
+});
+
+
+test('Play selects an available campaign and reuses the demo farm tab', async () => {
+  const { runtime } = makeApi();
+  let response = await send(runtime, { type: 'FARM_PLAY', campaignId: 'apex-campaign' });
+  assert.equal(response.ok, true);
+  assert.equal(response.state.settings.autoFarm, true);
+  assert.equal(response.state.farm.campaignId, 'apex-campaign');
+  assert.equal(response.state.farm.gameSlug, 'apex-legends');
+  const tabId = response.state.farm.tabId;
+  response = await send(runtime, { type: 'FARM_PLAY', campaignId: 'throne-and-liberty-campaign' });
+  assert.equal(response.state.farm.tabId, tabId);
+  assert.equal(response.state.farm.campaignId, 'throne-and-liberty-campaign');
+  response = await send(runtime, { type: 'FARM_SKIP' });
+  assert.equal(response.state.farm.gameSlug, 'throne-and-liberty', 'skip must not reset the chosen category to Rust');
+  response = await send(runtime, { type: 'FARM_PLAY', campaignId: 'rivals-campaign' });
+  assert.equal(response.ok, false);
+  assert.match(response.error, /ещё не началась/);
 });

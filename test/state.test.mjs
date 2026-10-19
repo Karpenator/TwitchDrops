@@ -294,3 +294,8 @@ test('StateStore prefers the new key when both exist', async () => {
   assert.equal(state.stats.dropsClaimed, 7);
   assert.equal(area.data['droppilot:state'].stats.dropsClaimed, 1, 'the legacy key is untouched');
 });
+
+
+test('a stopped farm keeps its null tab id across worker restarts', () => {
+  assert.equal(normalizeState(createDefaultState()).farm.tabId, null);
+});

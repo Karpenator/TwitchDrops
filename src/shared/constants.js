@@ -40,7 +40,6 @@ export const LEGACY = Object.freeze({
 
 export const HISTORY_LIMIT = 80;
 export const MAX_TRACKED_CHANNELS = 30;
-export const MAX_CAMPAIGN_DETAILS = 40;
 export const MAX_CLAIMS_PER_CYCLE = 12;
 
 // Persisted-query hashes. Twitch rotates these occasionally; every operation
@@ -80,6 +79,16 @@ export const queries = {
       channelLogin: String(channelLogin || ''),
     }),
 
+  // Campaign payloads sometimes omit game.slug. Ask Twitch instead of guessing
+  // category URLs for games whose canonical slug differs from their title.
+  gameCategory: (name) => ({
+    operationName: 'AutoPilotGameCategory',
+    query: `query AutoPilotGameCategory($name: String!) {
+      game(name: $name) { id slug }
+    }`,
+    variables: { name: String(name) },
+  }),
+
   claimDrop: (dropInstanceID) =>
     persisted('DropsPage_ClaimDropRewards', QUERY_HASHES.claimDrop, {
       input: { dropInstanceID: String(dropInstanceID) },
@@ -118,11 +127,12 @@ export const queries = {
   }),
 };
 
-/** Fallback used when Twitch reports PersistedQueryNotFound for the directory. */
-export const DIRECTORY_FALLBACK_QUERY = `query DirectoryPage_Game($slug: String!, $first: Int!, $after: Cursor, $options: GameStreamOptions) {
-  game(slug: $slug) {
+/** Raw directory query: rotated hashes, or lookup by name when no slug was supplied. */
+export const DIRECTORY_FALLBACK_QUERY = `query DirectoryPage_Game($slug: String, $name: String, $first: Int!, $after: Cursor, $options: GameStreamOptions) {
+  game(slug: $slug, name: $name) {
     displayName
     name
+    slug
     streams(first: $first, after: $after, options: $options) {
       edges {
         node {
@@ -142,7 +152,8 @@ export function directoryFallbackPayload(gameName, slug) {
     operationName: 'DirectoryPage_Game',
     query: DIRECTORY_FALLBACK_QUERY,
     variables: {
-      slug: String(slug),
+      slug: slug ? String(slug) : null,
+      name: slug ? null : String(gameName || ''),
       first: 30,
       after: null,
       options: {

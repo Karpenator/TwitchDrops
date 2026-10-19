@@ -5,7 +5,9 @@ import { fileURLToPath } from 'node:url';
 
 import {
   DROP_STATUS,
+  campaignCategoryUrl,
   campaignGameKey,
+  campaignPool,
   campaignWatchMark,
   farmGroupFromIds,
   groupFarmableCampaigns,
@@ -27,6 +29,7 @@ import {
   sanitizeImageUrl,
   sanitizeTwitchUrl,
   sortCampaigns,
+  sortFarmGroups,
 } from '../src/shared/drops-model.js';
 
 const NOW = Date.parse('2026-10-19T12:00:00Z');
@@ -71,7 +74,7 @@ test('normalizeCampaign exposes progress, claims and stats', () => {
   assert.equal(campaign.claimedCount, 1);
   assert.equal(campaign.inProgressCount, 1);
   assert.equal(campaign.progressPct, 33);
-  assert.equal(campaign.categoryUrl, 'https://www.twitch.tv/directory/category/rust');
+  assert.equal(campaign.categoryUrl, 'https://www.twitch.tv/directory/category/rust?filter=drops');
   assert.deepEqual(
     campaign.drops.map((drop) => drop.id),
     ['drop-1', 'drop-2', 'drop-3'],
@@ -243,12 +246,14 @@ test('farm helpers only consider campaigns worth watching', () => {
   const campaigns = normalizeCampaignList(inventory.dropCampaignsInProgress, { userId: 'user-1', now: NOW });
   const rust = campaigns.find((campaign) => campaign.id === 'campaign-rust');
   const delta = campaigns.find((campaign) => campaign.id === 'campaign-delta');
-  assert.equal(isFarmableCampaign(rust, NOW), true);
+  assert.equal(isFarmableCampaign(rust, NOW), false, 'ready, locked and claimed rewards need no viewing');
+  const watchable = { ...rust, drops: rust.drops.map((drop) => ({ ...drop, preconditionsMet: true })) };
+  assert.equal(isFarmableCampaign(watchable, NOW), true);
   assert.equal(isFarmableCampaign(delta, NOW), false, 'unlinked account cannot be farmed');
   assert.equal(isFarmableCampaign({ ...rust, completed: true }, NOW), false);
   assert.equal(isFarmableCampaign({ ...rust, active: false }, NOW), false);
 
-  assert.equal(pickFarmCampaign(campaigns, NOW).id, 'campaign-rust');
+  assert.equal(pickFarmCampaign([...campaigns, watchable], NOW).id, 'campaign-rust');
   assert.equal(pickFarmCampaign([], NOW), null);
   assert.equal(campaignWatchMark(rust), 60 + 90 + 180);
 });
@@ -370,4 +375,84 @@ test('groupWatchMark sums the progress of every campaign watched at once', () =>
   assert.equal(campaignWatchMark(rustA), 30);
   assert.equal(groupWatchMark([rustA, rustB]), 90);
   assert.equal(groupWatchMark([]), 0);
+});
+
+
+test('campaignPool includes available campaigns and prefers inventory progress on duplicate ids', () => {
+  const started = { id: 'same', drops: [{ currentMinutes: 42 }] };
+  const available = { id: 'available', drops: [] };
+  assert.deepEqual(campaignPool({
+    campaigns: [started, null],
+    available: [{ id: 'same', drops: [] }, available, available, {}],
+  }), [started, available]);
+  assert.deepEqual(campaignPool(null), []);
+});
+
+test('partial nested inventory fields keep category and eligibility metadata from details', () => {
+  const merged = mergeCampaignData({
+    id: 'partial',
+    game: { id: 'game', name: 'Rust', slug: null },
+    self: { hasStarted: true },
+    timeBasedDrops: [{ id: 'drop', self: { currentMinutesWatched: 20 } }],
+  }, {
+    id: 'partial',
+    game: { id: 'game', name: 'Rust', slug: 'rust' },
+    self: { isAccountConnected: false },
+    timeBasedDrops: [{
+      id: 'drop', requiredMinutesWatched: 60,
+      self: { currentMinutesWatched: 0, dropInstanceID: 'instance', isClaimed: false },
+    }],
+  });
+  const campaign = normalizeCampaign(merged, { now: NOW });
+  assert.equal(campaign.game.slug, 'rust');
+  assert.equal(campaign.linked, false);
+  assert.equal(campaign.drops[0].currentMinutes, 20);
+  assert.equal(campaign.drops[0].claimId, 'instance');
+});
+
+test('earned, not-yet-started and ended drops cannot hold up the farm queue', () => {
+  const campaign = farmableCampaignFixture({ id: 'watchable' });
+  const drop = campaign.drops[0];
+  assert.equal(isFarmableCampaign(campaign, NOW), true);
+  assert.equal(isFarmableCampaign({ ...campaign, endsAt: NOW - 1 }, NOW), false, 'cached active flag is not enough');
+  assert.equal(isFarmableCampaign({ ...campaign, startsAt: NOW + 1 }, NOW), false);
+  for (const patch of [
+    { currentMinutes: drop.requiredMinutes, claimable: true },
+    { currentMinutes: drop.requiredMinutes, claimable: false },
+    { startsAt: NOW + 1 },
+    { endsAt: NOW - 1 },
+    { preconditionsMet: false },
+  ]) {
+    assert.equal(isFarmableCampaign({ ...campaign, drops: [{ ...drop, ...patch }] }, NOW), false);
+  }
+  assert.equal(isFarmableCampaign({ ...campaign, allowedChannels: [], game: { name: 'Rust' } }, NOW), true, 'directory can resolve a game by name');
+});
+
+test('sortFarmGroups orders every group without mutating the input', () => {
+  const campaigns = [
+    farmableCampaignFixture({ id: 'slow', drops: [{ requiredMinutes: 300, currentMinutes: 0 }] }),
+    farmableCampaignFixture({ id: 'quick', gameSlug: 'quick', endAt: '2026-10-28T00:00:00Z', drops: [{ requiredMinutes: 30, currentMinutes: 0 }] }),
+  ];
+  const groups = groupFarmableCampaigns(campaigns, NOW);
+  assert.deepEqual(sortFarmGroups(groups).map((group) => group.key), ['rust', 'quick']);
+  assert.deepEqual(sortFarmGroups(groups, { priority: 'progress' }).map((group) => group.key), ['quick', 'rust']);
+  assert.equal(groups[0].key, 'rust');
+});
+
+
+test('campaign category links prefer the canonical slug over the game display name', () => {
+  const campaign = normalizeCampaign({
+    id: 'canonical',
+    game: { displayName: 'An Unrelated Display Name', slug: 'arena-breakout-infinite' },
+  }, { now: NOW });
+  assert.equal(campaign.categoryUrl, 'https://www.twitch.tv/directory/category/arena-breakout-infinite?filter=drops');
+});
+
+test('campaign category links repair old saved URLs from game metadata', () => {
+  const campaign = {
+    game: { name: 'Warhammer 40,000: Space Marine II', slug: '' },
+    categoryUrl: 'https://www.twitch.tv/directory/category/warhammer40000spacemarineii',
+  };
+  assert.equal(campaignCategoryUrl(campaign), 'https://www.twitch.tv/directory/category/warhammer-40-000-space-marine-ii?filter=drops');
+  assert.equal(campaignCategoryUrl({ game: { name: 'Dungeons &amp; Dragons' } }), 'https://www.twitch.tv/directory/category/dungeons-and-dragons?filter=drops');
 });

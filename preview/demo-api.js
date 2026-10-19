@@ -67,7 +67,7 @@
       expired: false,
       completed: false,
       drops,
-      categoryUrl: `https://www.twitch.tv/directory/category/${slug}`,
+      categoryUrl: `https://www.twitch.tv/directory/category/${slug}?filter=drops`,
       isAvailable: false,
       isInProgress: true,
     };
@@ -125,30 +125,12 @@
     ],
   });
 
-  function availableCampaign({ id, name, game, slug, startsIn, endsIn }) {
+  function availableCampaign({ id, name, game, slug, startsIn = -DAY, endsIn }) {
     return {
-      id,
-      name,
-      game: { id: `${slug}-id`, name: game, slug, boxArtUrl: '' },
-      imageUrl: '',
-      status: startsIn > 0 ? 'UPCOMING' : 'ACTIVE',
-      startsAt: now + startsIn,
-      endsAt: now + endsIn,
-      linked: true,
-      accountLinkUrl: '',
-      allowedChannels: [],
-      active: startsIn <= 0,
-      upcoming: startsIn > 0,
-      expired: false,
-      completed: false,
-      drops: [],
-      totalDrops: 0,
-      claimableCount: 0,
-      claimedCount: 0,
-      inProgressCount: 0,
-      remainingMinutes: 0,
-      progressPct: 0,
-      categoryUrl: `https://www.twitch.tv/directory/category/${slug}`,
+      ...makeCampaign({
+        id, name, game, slug, startsIn, endsIn,
+        drops: [makeDrop({ id: `${id}-reward`, name: 'Демонстрационная награда', required: 60, current: 0 })],
+      }),
       isAvailable: true,
       isInProgress: false,
     };
@@ -190,6 +172,16 @@
           startsIn: -DAY,
           endsIn: 6 * DAY,
         }),
+        ...[
+          ['warframe', 'Warframe', 'Warframe: Community Drops'],
+          ['escape-from-tarkov', 'Escape from Tarkov', 'Escape from Tarkov: Weekend Drops'],
+          ['overwatch-2', 'Overwatch 2', 'Overwatch 2: Season Rewards'],
+          ['sea-of-thieves', 'Sea of Thieves', 'Sea of Thieves: Community Weekend'],
+          ['path-of-exile', 'Path of Exile', 'Path of Exile: Livestream Rewards'],
+          ['throne-and-liberty', 'Throne and Liberty', 'Throne and Liberty: Adventure Drops'],
+        ].map(([slug, game, name]) => availableCampaign({
+          id: `${slug}-campaign`, name, game, slug, endsIn: 7 * DAY,
+        })),
       ],
       lastSync: now - 20_000,
       error: null,
@@ -387,6 +379,40 @@
     };
   }
 
+  function playFarm(campaignId) {
+    const all = [...state.drops.campaigns, ...state.drops.available];
+    const selected = all.find((campaign) => campaign.id === campaignId);
+    if (!selected) return { ok: false, error: 'Кампания не найдена' };
+    if (selected.upcoming) return { ok: false, error: 'Кампания ещё не началась' };
+    if (!selected.active || selected.completed || !selected.linked) {
+      return { ok: false, error: 'Кампания недоступна для просмотра' };
+    }
+    const campaigns = [selected, ...all.filter((campaign) =>
+      campaign !== selected && campaign.game.slug === selected.game.slug &&
+      campaign.active && campaign.linked && !campaign.completed,
+    )];
+    state.settings.autoFarm = true;
+    const login = selected.game.slug === 'rust' ? 'shroud' : `${selected.game.slug.slice(0, 18).replaceAll('-', '_')}_demo`;
+    state.farm = {
+      ...state.farm,
+      enabled: true,
+      tabId: state.farm.tabId || 777,
+      channelLogin: login,
+      channelDisplayName: login,
+      campaignId: selected.id,
+      campaignName: selected.name,
+      campaignIds: campaigns.map((campaign) => campaign.id),
+      campaignNames: campaigns.map((campaign) => campaign.name),
+      gameName: selected.game.name,
+      gameSlug: selected.game.slug,
+      startedAt: state.farm.startedAt || Date.now(),
+      lastSwitchAt: Date.now(),
+      lastProgressAt: Date.now(),
+      error: null,
+    };
+    return payload();
+  }
+
   function stopFarm() {
     state.settings.autoFarm = false;
     state.farm = {
@@ -450,16 +476,15 @@
       return payload();
     },
 
+    FARM_PLAY: (message) => playFarm(message.campaignId),
+
     FARM_SKIP: () => {
-      const nextChannel = state.farm.channelLogin === 'shroud' ? 'summit1g' : 'shroud';
+      const current = state.farm.channelLogin;
+      const nextChannel = state.farm.gameSlug === 'rust'
+        ? current === 'shroud' ? 'summit1g' : 'shroud'
+        : current?.endsWith('_alt') ? current.slice(0, -4) : `${current || 'demo'}_alt`;
       state.farm.channelLogin = nextChannel;
       state.farm.channelDisplayName = nextChannel;
-      state.farm.campaignId = 'rust-campaign';
-      state.farm.campaignName = 'Rust: Twitch Drops';
-      state.farm.campaignIds = ['rust-campaign', 'rust-prime'];
-      state.farm.campaignNames = ['Rust: Twitch Drops', 'Rust: Prime Rewards'];
-      state.farm.gameName = 'Rust';
-      state.farm.gameSlug = 'rust';
       state.farm.lastSwitchAt = Date.now();
       state.farm.lastProgressAt = Date.now();
       return payload();

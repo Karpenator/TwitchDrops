@@ -120,6 +120,7 @@ function makeService(t, { store, gql = fakeGql(), tabs = fakeTabs(), dropsRefres
     drops: {
       async refresh() {
         calls.refresh += 1;
+        return dropsRefresh();
       },
     },
     notify: {
@@ -380,10 +381,9 @@ test('stale drops trigger a refresh before choosing a channel', async (t) => {
 });
 
 test('farmable campaign selection ignores unlinked campaigns', async (t) => {
-  const campaigns = normalizeCampaignList(inventory.dropCampaignsInProgress, {
-    userId: 'user-1',
-    now: NOW,
-  });
+  const raw = structuredClone(inventory.dropCampaignsInProgress);
+  raw[0].timeBasedDrops[0].self.currentMinutesWatched = 30;
+  const campaigns = normalizeCampaignList(raw, { userId: 'user-1', now: NOW });
   const base = createDefaultState();
   const store = memoryStore({
     ...base,
@@ -721,4 +721,221 @@ test('stopping without closing the tab drops the farm flag', async (t) => {
   );
   assert.ok(message, 'the guard must stop silencing the player');
   assert.equal(message.message.enabled, true);
+});
+
+function availableDelta(patch = {}) {
+  return {
+    ...farmableCampaign({
+      id: 'delta-available', gameName: 'Delta Force', gameSlug: 'delta-force',
+      channels: ['delta_streamer'], currentMinutes: 0, endAt: '2026-10-30T00:00:00Z',
+      ...patch,
+    }),
+    isAvailable: true,
+    isInProgress: false,
+  };
+}
+
+function deltaGql(infos = {}) {
+  return fakeGql({ infos: {
+    delta_streamer: streamPayload('delta_streamer', { name: 'Delta Force', slug: 'delta-force' }),
+    ...infos,
+  } });
+}
+
+test('a completed inventory game rotates into an unstarted available game in the same tab', async (t) => {
+  const rust = farmableCampaign({ id: 'rust-started' });
+  const state = baseState(rust);
+  state.drops.available = [availableDelta()];
+  state.settings.farmAutoSwitch = false; // Completion rotation is not the idle-switch toggle.
+  const store = memoryStore(state);
+  const { service, tabs } = makeService(t, { store, gql: deltaGql() });
+  await service.start();
+  const tabId = state.farm.tabId;
+  state.drops.campaigns[0] = { ...rust, completed: true };
+  await service.tick({ refreshDrops: false });
+  assert.equal(state.farm.channelLogin, 'delta_streamer');
+  assert.deepEqual(state.farm.campaignIds, ['delta-available']);
+  assert.equal(state.farm.tabId, tabId);
+  assert.equal(tabs.actions.created.length, 1);
+  assert.equal(tabs.tabs.get(tabId).url, 'https://www.twitch.tv/delta_streamer');
+  await service.tick();
+  assert.deepEqual(state.farm.campaignIds, ['delta-available'], 'available targets survive until inventory catches up');
+});
+
+test('an offline highest-priority game cannot block other available games', async (t) => {
+  const state = baseState(farmableCampaign({ channels: ['offline_streamer'] }));
+  state.drops.available = [availableDelta()];
+  const store = memoryStore(state);
+  const { service } = makeService(t, { store, gql: deltaGql({ offline_streamer: streamPayload('offline_streamer', { live: false }) }) });
+  await service.start();
+  assert.equal(state.farm.channelLogin, 'delta_streamer');
+  assert.equal(state.farm.error, null);
+});
+
+test('fully earned but unclaimed final rewards do not waste more watch time', async (t) => {
+  const rust = farmableCampaign();
+  const state = baseState(rust);
+  state.settings.autoClaimDrops = false;
+  state.drops.available = [availableDelta()];
+  const { service } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
+  await service.start();
+  state.drops.campaigns[0] = {
+    ...rust, claimableCount: 1, remainingMinutes: 0,
+    drops: rust.drops.map((drop) => ({ ...drop, currentMinutes: drop.requiredMinutes, remainingMinutes: 0, claimable: true })),
+  };
+  await service.tick({ refreshDrops: false });
+  assert.equal(state.farm.channelLogin, 'delta_streamer');
+  assert.equal(state.drops.campaigns[0].drops[0].isClaimed, false, 'rotation must not turn auto-claim on');
+});
+
+test('Play starts the chosen available campaign and overrides automatic priority', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [availableDelta()];
+  const { service, tabs } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
+  const result = await service.play('delta-available');
+  assert.equal(result.ok, true);
+  assert.equal(state.settings.autoFarm, true);
+  assert.equal(state.farm.enabled, true);
+  assert.equal(state.farm.channelLogin, 'delta_streamer');
+  assert.equal(state.farm.campaignId, 'delta-available');
+  assert.deepEqual(tabs.actions.updated.at(-1).patch, { muted: true, autoDiscardable: false });
+  await service.tick();
+  assert.equal(state.farm.campaignId, 'delta-available', 'the next alarm must not undo the selection');
+});
+
+test('Play switches an existing farm tab instead of opening a second one', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [availableDelta()];
+  const { service, tabs } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
+  await service.start();
+  const tabId = state.farm.tabId;
+  assert.equal((await service.play('delta-available')).ok, true);
+  assert.equal(state.farm.tabId, tabId);
+  assert.equal(tabs.actions.created.length, 1);
+  assert.equal(tabs.tabs.get(tabId).url, 'https://www.twitch.tv/delta_streamer');
+});
+
+test('Play must cover the selected campaign, not just more campaigns of its game', async (t) => {
+  const selected = farmableCampaign({ id: 'selected', channels: ['selected_streamer'], endAt: '2026-10-30T00:00:00Z' });
+  const state = baseState(farmableCampaign({ id: 'other-a', channels: ['other_streamer'] }));
+  state.drops.campaigns.push(farmableCampaign({ id: 'other-b', channels: ['other_streamer'] }));
+  state.drops.available = [selected];
+  const { service } = makeService(t, { store: memoryStore(state) });
+  assert.equal((await service.play('selected')).ok, true);
+  assert.equal(state.farm.channelLogin, 'selected_streamer');
+  assert.deepEqual(state.farm.campaignIds, ['selected']);
+  await service.tick();
+  assert.deepEqual(state.farm.campaignIds, ['selected']);
+});
+
+test('an unavailable Play target leaves the current farm and settings untouched', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [availableDelta()];
+  const { service, tabs } = makeService(t, { store: memoryStore(state), gql: deltaGql({ delta_streamer: streamPayload('delta_streamer', { live: false }) }) });
+  await service.start();
+  const before = structuredClone(state.farm);
+  const result = await service.play('delta-available');
+  assert.equal(result.ok, false);
+  assert.match(result.message, /нет подходящих каналов/);
+  assert.deepEqual(state.farm, before);
+  assert.equal(tabs.actions.created.length, 1);
+});
+
+test('Play rejects missing, future, ended, completed and unlinked campaigns without navigation', async (t) => {
+  const normal = availableDelta();
+  const state = baseState(farmableCampaign());
+  state.drops.available = [
+    { ...normal, id: 'future', upcoming: true, active: false, startsAt: NOW + 60_000 },
+    { ...normal, id: 'ended', endsAt: NOW - 1 },
+    { ...normal, id: 'done', completed: true },
+    { ...normal, id: 'unlinked', linked: false },
+  ];
+  const { service, tabs } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
+  for (const id of ['missing', 'future', 'ended', 'done', 'unlinked']) {
+    assert.equal((await service.play(id)).ok, false, id);
+  }
+  assert.equal(tabs.actions.created.length, 0);
+  assert.equal(state.settings.autoFarm, false);
+});
+
+test('Play refreshes old metadata before choosing an allowed channel', async (t) => {
+  const hydrated = availableDelta();
+  const state = baseState(farmableCampaign());
+  state.drops.available = [{ ...hydrated, drops: [], totalDrops: 0, allowedChannels: [] }];
+  const { service, calls } = makeService(t, {
+    store: memoryStore(state), gql: deltaGql(),
+    dropsRefresh: async () => { state.drops.available = [hydrated]; },
+  });
+  assert.equal((await service.play('delta-available')).ok, true);
+  assert.equal(calls.refresh, 1);
+  assert.equal(state.farm.channelLogin, 'delta_streamer');
+});
+
+test('Play does not fabricate eligibility when reward details are unavailable', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [{ ...availableDelta(), drops: [], totalDrops: 0 }];
+  const { service, calls, tabs } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
+  const result = await service.play('delta-available');
+  assert.equal(result.ok, false);
+  assert.match(result.message, /Не удалось загрузить/);
+  assert.equal(calls.refresh, 1);
+  assert.equal(tabs.actions.created.length, 0);
+  assert.equal(state.settings.autoFarm, false);
+});
+
+test('all allowlisted channels are checked, including channels after the old twentieth cutoff', async (t) => {
+  const channels = Array.from({ length: 26 }, (_, index) => `allowed_${index}`);
+  const infos = Object.fromEntries(channels.map((login, index) => [login, streamPayload(login, { live: index === 25 })]));
+  const state = baseState(farmableCampaign({ channels }));
+  const gql = fakeGql({ infos });
+  const { service } = makeService(t, { store: memoryStore(state), gql });
+  await service.start();
+  assert.equal(state.farm.channelLogin, 'allowed_25');
+  assert.equal(gql.calls.batch.flat().length, 26);
+  assert.ok(gql.calls.batch.every((batch) => batch.length <= 10));
+});
+
+test('the directory resolves a game name when Twitch omits its slug', async (t) => {
+  const state = baseState(farmableCampaign({ gameSlug: '', channels: [] }));
+  const gql = fakeGql();
+  gql.request = async (payload) => {
+    gql.calls.request.push(payload);
+    return { data: { game: { slug: 'rust', streams: { edges: [{ node: {
+      broadcaster: { login: 'directory_streamer' }, viewersCount: 42,
+    } }] } } } };
+  };
+  const { service } = makeService(t, { store: memoryStore(state), gql });
+  await service.start();
+  assert.equal(state.farm.channelLogin, 'directory_streamer');
+  assert.equal(gql.calls.request[0].variables.name, 'Rust');
+  assert.equal(gql.calls.request[0].variables.slug, null);
+  assert.match(gql.calls.request[0].query, /game\(slug: \$slug, name: \$name\)/);
+});
+
+test('navigation commands are serialized so an alarm cannot undo Play and Stop wins last', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [availableDelta()];
+  const { service, tabs } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
+  await service.start();
+  await Promise.all([service.tick(), service.play('delta-available')]);
+  assert.equal(state.farm.channelLogin, 'delta_streamer');
+  assert.equal(tabs.actions.created.length, 1);
+  await Promise.all([service.play('campaign-farm'), service.stop()]);
+  assert.equal(state.settings.autoFarm, false);
+  assert.equal(state.farm.tabId, null);
+  assert.equal(tabs.tabs.size, 0);
+});
+
+test('remaining campaigns of the current game get a turn before another category', async (t) => {
+  const first = farmableCampaign({ id: 'rust-first', channels: ['shroud'] });
+  const second = farmableCampaign({ id: 'rust-second', channels: ['summit1g'], endAt: '2026-10-30T00:00:00Z' });
+  const state = baseState(first);
+  state.drops.campaigns.push(second);
+  state.drops.available = [availableDelta({ endAt: '2026-10-21T00:00:00Z' })];
+  const { service } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
+  await service.play('rust-first');
+  state.drops.campaigns[0] = { ...first, completed: true };
+  await service.tick({ refreshDrops: false });
+  assert.equal(state.farm.campaignId, 'rust-second');
+  assert.equal(state.farm.channelLogin, 'summit1g');
 });
