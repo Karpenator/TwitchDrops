@@ -258,7 +258,7 @@ test('skip switches to another channel in the same tab', async (t) => {
   assert.equal(tabs.tabs.get(tabId).url, 'https://www.twitch.tv/shroud');
 });
 
-test('stale progress switches channel after the cooldown', async (t) => {
+test('three minutes without progress trigger a switch, but not a millisecond earlier', async (t) => {
   const campaign = farmableCampaign();
   const store = memoryStore(baseState(campaign));
   const tabs = fakeTabs();
@@ -274,13 +274,16 @@ test('stale progress switches channel after the cooldown', async (t) => {
 
   await store.update((state) => {
     state.farm.lastProgressMark = 30;
-    state.farm.lastProgressAt = NOW - 21 * 60_000;
-    state.farm.lastSwitchAt = NOW - 21 * 60_000;
+    state.farm.lastProgressAt = NOW - 3 * 60_000 + 1;
+    state.farm.lastSwitchAt = NOW - 3 * 60_000;
     return state;
   });
 
   await service.tick();
-  assert.equal(store.state.farm.channelLogin, 'shroud');
+  assert.equal(store.state.farm.channelLogin, 'summit1g', 'do not switch before three minutes');
+  store.state.farm.lastProgressAt = NOW - 3 * 60_000;
+  await service.tick();
+  assert.equal(store.state.farm.channelLogin, 'shroud', 'switch at the three-minute boundary');
   assert.equal(store.state.farm.lastSwitchAt, NOW);
   assert.equal(store.state.farm.lastProgressAt, NOW);
 });
@@ -1156,4 +1159,47 @@ test('raid recovery keeps the explicitly chosen unlinked category when its origi
   assert.equal(state.farm.manualCampaignId, 'delta-available');
   assert.equal(state.farm.channelLogin, 'backup_delta');
   assert.equal(tabs.tabs.get(tabId).url, 'https://www.twitch.tv/backup_delta');
+});
+
+
+test('new progress resets the three-minute idle timer instead of switching', async (t) => {
+  const state = baseState(farmableCampaign());
+  const { service } = makeService(t, { store: memoryStore(state) });
+  await service.start();
+  const login = state.farm.channelLogin;
+  state.farm.lastProgressAt = NOW - 3 * 60_000;
+  state.farm.lastSwitchAt = NOW - 3 * 60_000;
+  state.drops.campaigns[0].drops[0].currentMinutes += 1;
+  await service.tick();
+  assert.equal(state.farm.channelLogin, login);
+  assert.equal(state.farm.lastProgressAt, NOW);
+  assert.equal(state.farm.lastProgressMark, 31);
+});
+
+test('the three-minute idle switch respects the auto-switch setting', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.settings.farmAutoSwitch = false;
+  const { service } = makeService(t, { store: memoryStore(state) });
+  await service.start();
+  const login = state.farm.channelLogin;
+  state.farm.lastProgressAt = NOW - 4 * 60_000;
+  state.farm.lastSwitchAt = NOW - 4 * 60_000;
+  await service.tick();
+  assert.equal(state.farm.channelLogin, login);
+  assert.equal(state.farm.lastProgressAt, NOW - 4 * 60_000);
+});
+
+test('idle switching still enforces the three-minute navigation cooldown', async (t) => {
+  const state = baseState(farmableCampaign());
+  const { service } = makeService(t, { store: memoryStore(state) });
+  await service.start();
+  const login = state.farm.channelLogin;
+  state.farm.lastProgressAt = NOW - 4 * 60_000;
+  state.farm.lastSwitchAt = NOW - 3 * 60_000 + 1;
+  await service.tick();
+  assert.equal(state.farm.channelLogin, login, 'the cooldown has not elapsed yet');
+  state.farm.lastSwitchAt = NOW - 3 * 60_000;
+  await service.tick();
+  assert.notEqual(state.farm.channelLogin, login);
+  assert.equal(state.farm.lastSwitchAt, NOW);
 });

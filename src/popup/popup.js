@@ -724,7 +724,7 @@ function renderSettings() {
     ${settingSwitch('autoFarm', 'Держать канал с дропсами', 'Реальная вкладка Twitch, без подделки просмотров.', settings.autoFarm)}
     ${settingSwitch('backgroundWatch', 'Фоновый просмотр', 'Twitch ставит плеер на паузу в скрытой вкладке. Настройка не даёт ему это сделать — дропсы идут, даже если вкладка не активна.', settings.backgroundWatch)}
     ${settingSwitch('farmMuted', 'Без звука', 'Мьютить вкладку автофермы, чтобы не мешала.', settings.farmMuted)}
-    ${settingSwitch('farmAutoSwitch', 'Менять канал при простое', 'Если прогресс не растёт 20 минут — попробовать другой канал.', settings.farmAutoSwitch)}
+    ${settingSwitch('farmAutoSwitch', 'Менять канал при простое', 'Если прогресс не растёт 3 минуты — попробовать другой канал.', settings.farmAutoSwitch)}
     <div class="select-row">
       <div class="setting-copy"><div class="setting-title">Как выбирать канал</div><div class="setting-sub">среди подходящих стримов</div></div>
       <select class="select" data-setting="farmStrategy" aria-label="Стратегия выбора канала">${strategyOptions(settings.farmStrategy)}</select>

@@ -12,7 +12,7 @@ import {
 import { channelLoginFromUrl, channelUrl } from '../shared/twitch-url.js';
 import { describeError } from '../shared/errors.js';
 
-const STALE_PROGRESS_MS = 20 * 60_000;
+const STALE_PROGRESS_MS = 3 * 60_000;
 const DROPS_STALE_MS = 60_000;
 const SWITCH_COOLDOWN_MS = 3 * 60_000;
 const STREAM_BATCH_SIZE = 10;
@@ -552,7 +552,7 @@ export class FarmService {
           } else if (
             state.settings.farmAutoSwitch &&
             state.farm.lastProgressAt > 0 &&
-            now - state.farm.lastProgressAt > STALE_PROGRESS_MS
+            now - state.farm.lastProgressAt >= STALE_PROGRESS_MS
           ) {
             stale = true;
           }
@@ -572,7 +572,7 @@ export class FarmService {
           .filter((campaign) => campaignGameKey(campaign) === key)
           .map((campaign) => campaign.id),
       });
-    } else if (stale && now - state.farm.lastSwitchAt > SWITCH_COOLDOWN_MS) {
+    } else if (stale && now - state.farm.lastSwitchAt >= SWITCH_COOLDOWN_MS) {
       target = await this.pickTarget({
         excludeLogin: state.farm.channelLogin || '',
         campaignIds: groupIds,
