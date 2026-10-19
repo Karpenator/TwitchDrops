@@ -299,3 +299,15 @@ test('StateStore prefers the new key when both exist', async () => {
 test('a stopped farm keeps its null tab id across worker restarts', () => {
   assert.equal(normalizeState(createDefaultState()).farm.tabId, null);
 });
+
+
+test('the manual campaign opt-in survives storage while legacy and malformed states get no opt-in', async () => {
+  const area = memoryArea();
+  const first = new StateStore({ area });
+  await first.load();
+  await first.update((state) => { state.farm.manualCampaignId = 'unlinked-campaign'; });
+  const restored = new StateStore({ area });
+  assert.equal((await restored.load()).farm.manualCampaignId, 'unlinked-campaign');
+  assert.equal(normalizeState({ version: STATE_VERSION, farm: {} }).farm.manualCampaignId, null);
+  assert.equal(normalizeState({ version: STATE_VERSION, farm: { manualCampaignId: {} } }).farm.manualCampaignId, null);
+});

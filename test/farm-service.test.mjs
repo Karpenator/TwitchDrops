@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { FarmService } from '../src/background/farm.js';
-import { createDefaultState } from '../src/background/state.js';
+import { createDefaultState, normalizeState } from '../src/background/state.js';
 import { normalizeCampaign, normalizeCampaignList } from '../src/shared/drops-model.js';
 
 const NOW = Date.parse('2026-10-19T12:00:00Z');
@@ -48,7 +48,7 @@ function fakeTabs() {
     async get(tabId) {
       const tab = tabs.get(tabId);
       if (!tab) throw new Error('No tab');
-      return { id: tabId, url: tab.url, muted: tab.muted };
+      return { id: tabId, ...tab };
     },
     async create({ url, active }) {
       const id = (nextId += 1);
@@ -841,17 +841,16 @@ test('an unavailable Play target leaves the current farm and settings untouched'
   assert.equal(tabs.actions.created.length, 1);
 });
 
-test('Play rejects missing, future, ended, completed and unlinked campaigns without navigation', async (t) => {
+test('Play rejects missing, future, ended and completed campaigns without navigation', async (t) => {
   const normal = availableDelta();
   const state = baseState(farmableCampaign());
   state.drops.available = [
     { ...normal, id: 'future', upcoming: true, active: false, startsAt: NOW + 60_000 },
     { ...normal, id: 'ended', endsAt: NOW - 1 },
     { ...normal, id: 'done', completed: true },
-    { ...normal, id: 'unlinked', linked: false },
   ];
   const { service, tabs } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
-  for (const id of ['missing', 'future', 'ended', 'done', 'unlinked']) {
+  for (const id of ['missing', 'future', 'ended', 'done']) {
     assert.equal((await service.play(id)).ok, false, id);
   }
   assert.equal(tabs.actions.created.length, 0);
@@ -941,39 +940,41 @@ test('remaining campaigns of the current game get a turn before another category
 });
 
 
-test('Play rechecks a cached unlinked campaign even when the rest of the dashboard is fresh', async (t) => {
-  const hydrated = availableDelta();
+test('Play accepts an unlinked campaign without making account linking a prerequisite', async (t) => {
   const state = baseState(farmableCampaign());
-  state.drops.available = [{ ...hydrated, linked: false }];
+  state.drops.available = [{ ...availableDelta(), linked: false }];
   const { service, tabs, calls } = makeService(t, {
     store: memoryStore(state), gql: deltaGql(),
-    dropsRefresh: async () => { state.drops.available = [hydrated]; },
+    dropsRefresh: async () => { throw new Error('no connection recheck required'); },
   });
   await service.start();
   const tabId = state.farm.tabId;
-  assert.equal((await service.play(hydrated.id)).ok, true);
-  assert.equal(calls.refresh, 1);
+  const result = await service.play('delta-available');
+  assert.equal(result.ok, true);
+  assert.match(result.warning, /без привязки/);
+  assert.equal(calls.refresh, 0);
   assert.equal(state.farm.tabId, tabId);
-  assert.equal(state.farm.campaignId, hydrated.id);
+  assert.equal(state.farm.campaignId, 'delta-available');
+  assert.equal(state.farm.manualCampaignId, 'delta-available');
   assert.equal(state.farm.channelLogin, 'delta_streamer');
   assert.equal(tabs.actions.created.length, 1);
   await service.tick();
-  assert.equal(state.farm.campaignId, hydrated.id);
+  assert.equal(state.farm.campaignId, 'delta-available', 'the next alarm must preserve unlinked playback');
+  assert.equal(state.drops.available[0].linked, false, 'do not pretend the account became connected');
 });
 
-test('a genuinely unlinked campaign explains what to do and keeps the current farm untouched', async (t) => {
+test('Play can start an unlinked campaign while farming is off', async (t) => {
   const state = baseState(farmableCampaign());
   state.drops.available = [{ ...availableDelta(), linked: false }];
-  const { service, calls, tabs } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
-  await service.start();
-  const before = structuredClone(state.farm);
+  const { service, tabs } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
   const result = await service.play('delta-available');
-  assert.equal(result.ok, false);
-  assert.match(result.message, /привяжите игровой аккаунт/);
-  assert.equal(calls.refresh, 1, 'check Twitch before rejecting the cached connection flag');
-  assert.deepEqual(state.farm, before);
+  assert.equal(result.ok, true);
+  assert.match(result.warning, /без привязки/);
   assert.equal(state.settings.autoFarm, true);
+  assert.equal(state.farm.enabled, true);
+  assert.equal(state.farm.manualCampaignId, 'delta-available');
   assert.equal(tabs.actions.created.length, 1);
+  assert.equal(tabs.tabs.get(state.farm.tabId).url, 'https://www.twitch.tv/delta_streamer');
 });
 
 test('a campaign can be played after its start time even if its saved upcoming flag was not refreshed', async (t) => {
@@ -989,23 +990,24 @@ test('a campaign can be played after its start time even if its saved upcoming f
   assert.equal(state.farm.campaignId, hydrated.id);
 });
 
-test('Play checks account connection again after refreshing stale reward metadata', async (t) => {
+test('Play accepts real unlinked campaign metadata after hydrating rewards', async (t) => {
   const state = baseState(farmableCampaign());
   state.drops.available = [{ ...availableDelta(), drops: [] }];
-  const { service, tabs } = makeService(t, {
+  const { service, tabs, calls } = makeService(t, {
     store: memoryStore(state), gql: deltaGql(),
     dropsRefresh: async () => { state.drops.available = [{ ...availableDelta(), linked: false }]; },
   });
   const result = await service.play('delta-available');
-  assert.equal(result.ok, false);
-  assert.match(result.message, /привяжите игровой аккаунт/);
-  assert.equal(tabs.actions.created.length, 0);
-  assert.equal(state.settings.autoFarm, false);
+  assert.equal(result.ok, true);
+  assert.match(result.warning, /без привязки/);
+  assert.equal(calls.refresh, 1);
+  assert.equal(tabs.actions.created.length, 1);
+  assert.equal(state.settings.autoFarm, true);
 });
 
 test('Play handles a campaign disappearing during refresh without starting another one', async (t) => {
   const state = baseState(farmableCampaign());
-  state.drops.available = [{ ...availableDelta(), linked: false }];
+  state.drops.available = [{ ...availableDelta(), linked: false, drops: [] }];
   const { service, tabs } = makeService(t, {
     store: memoryStore(state), gql: deltaGql(),
     dropsRefresh: async () => { state.drops.available = []; },
@@ -1015,4 +1017,143 @@ test('Play handles a campaign disappearing during refresh without starting anoth
   assert.match(result.message, /Кампания не найдена/);
   assert.equal(tabs.actions.created.length, 0);
   assert.equal(state.settings.autoFarm, false);
+});
+
+
+test('an explicit unlinked choice survives normalized storage and a restarted farm service', async (t) => {
+  const store = memoryStore(baseState(farmableCampaign()));
+  store.state.drops.available = [{ ...availableDelta(), linked: false }];
+  const { service, tabs, gql } = makeService(t, { store, gql: deltaGql() });
+  assert.equal((await service.play('delta-available')).ok, true);
+  const tabId = store.state.farm.tabId;
+  store.state = normalizeState(structuredClone(store.state));
+  const restarted = new FarmService({ store, gql, drops: { async refresh() {} }, tabsApi: tabs });
+  await restarted.tick();
+  assert.equal(store.state.farm.manualCampaignId, 'delta-available');
+  assert.equal(store.state.farm.campaignId, 'delta-available');
+  assert.equal(store.state.farm.tabId, tabId);
+  assert.equal(tabs.actions.created.length, 1);
+});
+
+test('unlinked permissions do not leak into automatic choices or survive Stop', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [{ ...availableDelta(), linked: false }];
+  const { service } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
+  await service.start();
+  assert.equal(state.farm.campaignId, 'campaign-farm');
+  assert.equal(state.farm.manualCampaignId, null);
+  await service.play('delta-available');
+  await service.stop();
+  assert.equal(state.farm.manualCampaignId, null);
+  await service.start();
+  assert.equal(state.farm.campaignId, 'campaign-farm');
+});
+
+test('finishing an explicitly selected unlinked campaign returns to normal automatic rotation', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [{ ...availableDelta(), linked: false }];
+  const { service } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
+  await service.play('delta-available');
+  state.drops.available[0].completed = true;
+  await service.tick({ refreshDrops: false });
+  assert.equal(state.farm.campaignId, 'campaign-farm');
+  assert.equal(state.farm.manualCampaignId, null);
+});
+
+test('an unlinked Play target still respects its channel allowlist and does not fake an available stream', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [{ ...availableDelta(), linked: false }];
+  const { service, tabs } = makeService(t, {
+    store: memoryStore(state),
+    gql: deltaGql({ delta_streamer: streamPayload('delta_streamer', { live: false }) }),
+  });
+  await service.start();
+  const before = structuredClone(state.farm);
+  const result = await service.play('delta-available');
+  assert.equal(result.ok, false);
+  assert.match(result.message, /нет подходящих каналов/);
+  assert.deepEqual(state.farm, before);
+  assert.equal(tabs.actions.created.length, 1);
+});
+
+test('raid navigation immediately restores a still-eligible drops channel without waiting for an alarm', async (t) => {
+  const state = baseState(farmableCampaign({ channels: ['shroud'] }));
+  const { service, tabs, gql, calls } = makeService(t, { store: memoryStore(state) });
+  await service.start();
+  const tabId = state.farm.tabId;
+  tabs.tabs.get(tabId).url = 'https://www.twitch.tv/no_drops?referrer=raid';
+  await service.handleNavigation(tabId);
+  assert.equal(tabs.tabs.get(tabId).url, 'https://www.twitch.tv/shroud');
+  assert.equal(state.farm.channelLogin, 'shroud');
+  assert.equal(tabs.actions.created.length, 1);
+  assert.equal(calls.refresh, 0, 'navigation rechecks the stream, not every campaign');
+  assert.equal(gql.calls.data.some((payload) => payload.variables.channel === 'no_drops'), false);
+});
+
+test('a raid after stream end selects another drops channel in the same farm tab', async (t) => {
+  const state = baseState(farmableCampaign());
+  const infos = {
+    shroud: streamPayload('shroud', { viewers: 100 }),
+    summit1g: streamPayload('summit1g', { viewers: 500 }),
+  };
+  const { service, tabs } = makeService(t, { store: memoryStore(state), gql: fakeGql({ infos }) });
+  await service.start();
+  const tabId = state.farm.tabId;
+  infos.summit1g = streamPayload('summit1g', { live: false });
+  tabs.tabs.get(tabId).url = 'https://www.twitch.tv/no_drops?referrer=raid';
+  await service.handleNavigation(tabId);
+  assert.equal(state.farm.channelLogin, 'shroud');
+  assert.equal(state.farm.tabId, tabId);
+  assert.equal(tabs.tabs.get(tabId).url, 'https://www.twitch.tv/shroud');
+  assert.equal(tabs.actions.created.length, 1);
+});
+
+test('raid redirects to a directory and pending navigations are also repaired', async (t) => {
+  const state = baseState(farmableCampaign({ channels: ['shroud'] }));
+  const { service, tabs } = makeService(t, { store: memoryStore(state) });
+  await service.start();
+  const tabId = state.farm.tabId;
+  tabs.tabs.get(tabId).url = 'https://www.twitch.tv/directory/category/just-chatting';
+  await service.handleNavigation(tabId);
+  assert.equal(tabs.tabs.get(tabId).url, 'https://www.twitch.tv/shroud');
+  tabs.tabs.get(tabId).pendingUrl = 'https://www.twitch.tv/no_drops';
+  const before = tabs.actions.updated.length;
+  await service.handleNavigation(tabId);
+  assert.ok(tabs.actions.updated.slice(before).some(({ patch }) => patch.url === 'https://www.twitch.tv/shroud'));
+});
+
+test('navigation from other tabs, the selected channel, or a stopped farm is ignored', async (t) => {
+  const state = baseState(farmableCampaign());
+  const { service, tabs, gql } = makeService(t, { store: memoryStore(state) });
+  await service.start();
+  const tabId = state.farm.tabId;
+  const before = { streams: gql.calls.data.length, batches: gql.calls.batch.length, updates: tabs.actions.updated.length };
+  await service.handleNavigation(null);
+  await service.handleNavigation(tabId + 1);
+  await service.handleNavigation(tabId);
+  assert.deepEqual({ streams: gql.calls.data.length, batches: gql.calls.batch.length, updates: tabs.actions.updated.length }, before);
+  await service.stop({ closeTab: false });
+  tabs.tabs.get(tabId).url = 'https://www.twitch.tv/no_drops';
+  await service.handleNavigation(tabId);
+  assert.equal(tabs.tabs.get(tabId).url, 'https://www.twitch.tv/no_drops');
+  assert.equal(state.settings.autoFarm, false);
+});
+
+test('raid recovery keeps the explicitly chosen unlinked category when its original streamer ends', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [{ ...availableDelta({ channels: ['delta_streamer', 'backup_delta'] }), linked: false }];
+  const infos = {
+    delta_streamer: streamPayload('delta_streamer', { name: 'Delta Force', slug: 'delta-force', viewers: 100 }),
+    backup_delta: streamPayload('backup_delta', { name: 'Delta Force', slug: 'delta-force', viewers: 50 }),
+  };
+  const { service, tabs } = makeService(t, { store: memoryStore(state), gql: fakeGql({ infos }) });
+  await service.play('delta-available');
+  const tabId = state.farm.tabId;
+  infos.delta_streamer = streamPayload('delta_streamer', { live: false });
+  tabs.tabs.get(tabId).url = 'https://www.twitch.tv/no_drops?referrer=raid';
+  await service.handleNavigation(tabId);
+  assert.equal(state.farm.campaignId, 'delta-available');
+  assert.equal(state.farm.manualCampaignId, 'delta-available');
+  assert.equal(state.farm.channelLogin, 'backup_delta');
+  assert.equal(tabs.tabs.get(tabId).url, 'https://www.twitch.tv/backup_delta');
 });

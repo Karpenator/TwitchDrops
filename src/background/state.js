@@ -33,6 +33,7 @@ export function createDefaultState() {
       channelLogin: null,
       channelDisplayName: '',
       campaignId: null,
+      manualCampaignId: null,
       campaignName: '',
       campaignIds: [],
       campaignNames: [],
@@ -161,6 +162,8 @@ export function normalizeState(raw) {
       channelLogin: farm.channelLogin ? String(farm.channelLogin) : null,
       channelDisplayName: String(farm.channelDisplayName || ''),
       campaignId: farm.campaignId ? String(farm.campaignId) : null,
+      manualCampaignId: typeof farm.manualCampaignId === 'string' && farm.manualCampaignId.trim()
+        ? farm.manualCampaignId.trim() : null,
       campaignName: String(farm.campaignName || ''),
       campaignIds: sanitizeStringList(farm.campaignIds, farm.campaignId),
       campaignNames: sanitizeStringList(farm.campaignNames, farm.campaignName),

@@ -459,10 +459,13 @@ test('campaign category links repair old saved URLs from game metadata', () => {
 });
 
 
-test('Play permits an explicit account-link recheck instead of disabling a cached unlinked campaign', () => {
+test('Play permits watching unlinked campaigns without enabling them in default automatic choices', () => {
   const campaign = { ...rustCampaign(), linked: false };
   assert.equal(campaignPlayDisabledReason(campaign, NOW), '');
   assert.equal(isFarmableCampaign(campaign, NOW), false, 'automatic farming still requires a connected account');
+  const watchable = { ...campaign, drops: campaign.drops.map((drop) => ({ ...drop, preconditionsMet: true })) };
+  assert.equal(isFarmableCampaign(watchable, NOW, { allowUnlinked: true }), true);
+  assert.equal(isFarmableCampaign({ ...watchable, completed: true }, NOW, { allowUnlinked: true }), false);
 });
 
 test('Play explains real blockers and uses the scheduled time instead of a stale upcoming flag', () => {
@@ -474,4 +477,14 @@ test('Play explains real blockers and uses the scheduled time instead of a stale
   assert.match(campaignPlayDisabledReason({ ...campaign, expired: true }, NOW), /закончилась/);
   assert.match(campaignPlayDisabledReason({ ...campaign, completed: true }, NOW), /получены/);
   assert.equal(campaignPlayDisabledReason({ ...campaign, upcoming: true, active: false, startsAt: NOW }, NOW), '');
+});
+
+
+test('only explicitly permitted unlinked campaigns enter farmable groups', () => {
+  const selected = farmableCampaignFixture({ id: 'selected-unlinked', linked: false });
+  const other = farmableCampaignFixture({ id: 'other-unlinked', gameName: 'Other', gameSlug: 'other', linked: false });
+  assert.deepEqual(groupFarmableCampaigns([selected, other], NOW), []);
+  const groups = groupFarmableCampaigns([selected, other], NOW, { allowUnlinkedIds: [selected.id] });
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0].campaigns.map((campaign) => campaign.id), [selected.id]);
 });

@@ -55,7 +55,7 @@ async function makeWorker(t, { autoClaimDrops = true, cachedDelta = {} } = {}) {
   const alarms = new Map();
   const tabs = new Map();
   const gqlCalls = [];
-  const api = { deltaLive: true, streamGate: null };
+  const api = { deltaLive: true, rustLive: true, streamGate: null };
   let nextTabId = 100;
   const chrome = {
     storage: { local, session },
@@ -76,6 +76,7 @@ async function makeWorker(t, { autoClaimDrops = true, cachedDelta = {} } = {}) {
     notifications: { onClicked: { addListener() {} }, onClosed: { addListener() {} } },
     tabs: {
       onRemoved: { addListener() {} },
+      onUpdated: { addListener(listener) { listeners.tabUpdated = listener; } },
       async query() { return [...tabs.values()]; },
       async get(id) {
         if (!tabs.has(id)) throw new Error('Tab not found');
@@ -110,7 +111,7 @@ async function makeWorker(t, { autoClaimDrops = true, cachedDelta = {} } = {}) {
       case 'VideoPlayerStreamInfoOverlayChannel': {
         const login = payload.variables.channel;
         if (api.streamGate) await api.streamGate(login);
-        const live = login !== 'delta_streamer' || api.deltaLive;
+        const live = login === 'rust_streamer' ? api.rustLive : login !== 'delta_streamer' || api.deltaLive;
         return { data: { user: { login, displayName: login, stream: live ? {
           id: `stream-${login}`, game: login === 'rust_streamer' ? rust.game : delta.game, viewersCount: 100,
         } : null } } };
@@ -243,31 +244,109 @@ test('the farm alarm refreshes completion even with a long drops sync interval',
 });
 
 
-test('FARM_PLAY rechecks a restored unlinked snapshot and switches the existing tab after connection', async (t) => {
+test('FARM_PLAY accepts an unlinked snapshot, reports a warning and persists the explicit selection', async (t) => {
   const { send, tabs, gqlCalls } = await makeWorker(t, { cachedDelta: { linked: false } });
   const started = await send({ type: 'START_FARM' });
   const tabId = started.state.farm.tabId;
   const response = await send({ type: 'FARM_PLAY', campaignId: 'delta' });
   assert.equal(response.ok, true);
+  assert.match(response.warning, /без привязки/);
   assert.equal(response.state.farm.campaignId, 'delta');
+  assert.equal(response.state.farm.manualCampaignId, 'delta');
   assert.equal(response.state.farm.tabId, tabId);
-  assert.equal(response.state.drops.available[0].linked, true);
+  assert.equal(response.state.drops.available[0].linked, false);
   assert.equal(tabs.size, 1);
   assert.equal(tabs.get(tabId).url, 'https://www.twitch.tv/delta_streamer');
+  assert.equal(gqlCalls.filter((query) => query.operationName === 'Inventory').length, 0);
+});
+
+test('the farm alarm keeps an explicitly selected campaign unlinked after refreshing real metadata', async (t) => {
+  const { send, tabs, delta, listeners, gqlCalls } = await makeWorker(t, { cachedDelta: { linked: false } });
+  delta.self.isAccountConnected = false;
+  const response = await send({ type: 'FARM_PLAY', campaignId: 'delta' });
+  assert.equal(response.ok, true);
+  assert.match(response.warning, /без привязки/);
+  t.mock.timers.tick(2 * 60_000);
+  await listeners.alarm({ name: ALARMS.farm });
+  const snapshot = await send({ type: 'GET_STATE' });
+  assert.equal(snapshot.state.farm.campaignId, 'delta');
+  assert.equal(snapshot.state.farm.manualCampaignId, 'delta');
+  assert.equal(snapshot.state.settings.autoFarm, true);
+  assert.equal(snapshot.state.drops.available[0].linked, false);
+  assert.equal(tabs.size, 1);
+  assert.equal(tabs.get(response.state.farm.tabId).url, 'https://www.twitch.tv/delta_streamer');
   assert.equal(gqlCalls.filter((query) => query.operationName === 'Inventory').length, 1);
 });
 
-test('FARM_PLAY reports an actually missing account connection without disrupting the current tab', async (t) => {
-  const { send, tabs, delta, gqlCalls } = await makeWorker(t, { cachedDelta: { linked: false } });
+
+test('a farm-tab navigation event restores the trusted channel, ignoring a page-supplied raid login', async (t) => {
+  const { send, tabs, gqlCalls } = await makeWorker(t);
   const started = await send({ type: 'START_FARM' });
-  delta.self.isAccountConnected = false;
-  const response = await send({ type: 'FARM_PLAY', campaignId: 'delta' });
-  assert.equal(response.ok, false);
-  assert.match(response.error, /привяжите игровой аккаунт/);
-  const snapshot = await send({ type: 'GET_STATE' });
-  assert.equal(snapshot.state.farm.campaignId, 'rust');
-  assert.equal(snapshot.state.settings.autoFarm, true);
+  const tabId = started.state.farm.tabId;
+  tabs.get(tabId).url = 'https://www.twitch.tv/no_drops?referrer=raid';
+  const response = await send({ type: 'TAB_CHANNEL', payload: { login: 'rust_streamer' } }, { tab: { id: tabId, url: tabs.get(tabId).url } });
+  assert.equal(response.ok, true);
+  assert.equal(tabs.get(tabId).url, 'https://www.twitch.tv/rust_streamer');
   assert.equal(tabs.size, 1);
-  assert.equal(tabs.get(started.state.farm.tabId).url, 'https://www.twitch.tv/rust_streamer');
-  assert.equal(gqlCalls.filter((query) => query.operationName === 'Inventory').length, 1);
+  assert.equal(gqlCalls.some((query) => query.variables?.channel === 'no_drops'), false);
+});
+
+test('a browser URL-update event handles a raid even without a content-script message', async (t) => {
+  const { send, tabs, listeners, api } = await makeWorker(t);
+  const started = await send({ type: 'START_FARM' });
+  const tabId = started.state.farm.tabId;
+  api.rustLive = false;
+  tabs.get(tabId).url = 'https://www.twitch.tv/no_drops?referrer=raid';
+  await listeners.tabUpdated(tabId, { url: tabs.get(tabId).url });
+  const snapshot = await send({ type: 'GET_STATE' });
+  assert.equal(snapshot.state.farm.campaignId, 'delta');
+  assert.equal(snapshot.state.farm.tabId, tabId);
+  assert.equal(tabs.get(tabId).url, 'https://www.twitch.tv/delta_streamer');
+  assert.equal(tabs.size, 1);
+});
+
+test('navigation in non-farm tabs and non-navigation tab updates cannot hijack the farm', async (t) => {
+  const { send, tabs, listeners, gqlCalls } = await makeWorker(t);
+  const started = await send({ type: 'START_FARM' });
+  const tabId = started.state.farm.tabId;
+  const before = gqlCalls.length;
+  await send({ type: 'TAB_CHANNEL', payload: { login: 'no_drops' } }, { tab: { id: 900, url: 'https://www.twitch.tv/no_drops' } });
+  await listeners.tabUpdated(900, { url: 'https://www.twitch.tv/no_drops' });
+  await listeners.tabUpdated(tabId, { mutedInfo: { muted: true } });
+  assert.equal(gqlCalls.length, before);
+  assert.equal(tabs.get(tabId).url, 'https://www.twitch.tv/rust_streamer');
+});
+
+test('a delayed raid check cannot restart farming after Stop', async (t) => {
+  const { send, tabs, api } = await makeWorker(t);
+  const started = await send({ type: 'START_FARM' });
+  const tabId = started.state.farm.tabId;
+  tabs.get(tabId).url = 'https://www.twitch.tv/no_drops?referrer=raid';
+  let release;
+  let entered;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const checking = new Promise((resolve) => { entered = resolve; });
+  api.streamGate = async () => { entered(); await gate; };
+  const navigation = send({ type: 'TAB_CHANNEL' }, { tab: { id: tabId, url: tabs.get(tabId).url } });
+  await checking;
+  const stopping = send({ type: 'STOP_FARM' });
+  release();
+  await Promise.all([navigation, stopping]);
+  const snapshot = await send({ type: 'GET_STATE' });
+  assert.equal(snapshot.state.settings.autoFarm, false);
+  assert.equal(snapshot.state.farm.manualCampaignId, null);
+  assert.equal(tabs.size, 0);
+});
+
+test('a stale browser navigation event cannot undo a newer explicit Play selection', async (t) => {
+  const { send, tabs, listeners, gqlCalls } = await makeWorker(t);
+  await send({ type: 'START_FARM' });
+  const chosen = await send({ type: 'FARM_PLAY', campaignId: 'delta' });
+  const tabId = chosen.state.farm.tabId;
+  const before = gqlCalls.length;
+  await listeners.tabUpdated(tabId, { url: 'https://www.twitch.tv/old_raid_destination' });
+  const snapshot = await send({ type: 'GET_STATE' });
+  assert.equal(snapshot.state.farm.campaignId, 'delta');
+  assert.equal(tabs.get(tabId).url, 'https://www.twitch.tv/delta_streamer');
+  assert.equal(gqlCalls.length, before, 'read the actual tab URL instead of trusting an old event');
 });

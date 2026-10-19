@@ -403,7 +403,7 @@ export function isClaimResponseSuccessful(payload) {
 
 /**
  * Hard blockers for the Play button. Account connection is intentionally not
- * one of them: a saved `linked: false` must allow an explicit fresh check.
+ * one of them: explicit playback is allowed before linking a game account.
  * A cached UPCOMING flag must not keep Play disabled after its start time.
  */
 export function campaignPlayDisabledReason(campaign, now = Date.now()) {
@@ -420,12 +420,14 @@ export function campaignPlayDisabledReason(campaign, now = Date.now()) {
 }
 
 /**
- * Campaign suitable for the real-tab auto-farm: active, linked, has rewards
- * left to watch and has a category we can search. Fully earned rewards stay
- * claimable but must not keep the farm watching a finished game.
+ * Active campaign with rewards left to watch and a searchable category.
+ * Automatic choices require an account connection; an explicit Play can opt
+ * its selected campaign into viewing without one. Fully earned rewards must
+ * not keep the farm watching a finished game.
  */
-export function isFarmableCampaign(campaign, now = Date.now()) {
-  if (!campaign || !campaign.active || campaign.linked === false) return false;
+export function isFarmableCampaign(campaign, now = Date.now(), { allowUnlinked = false } = {}) {
+  if (!campaign || !campaign.active) return false;
+  if (campaign.linked === false && !allowUnlinked) return false;
   if (campaign.completed || campaign.expired) return false;
   if (campaign.startsAt && campaign.startsAt > now) return false;
   if (campaign.endsAt && campaign.endsAt <= now) return false;
@@ -506,10 +508,11 @@ function sortGroupCampaigns(campaigns) {
  * by watching the same channel at the same time (Twitch's overlapping-campaign
  * behavior), so a group is the smallest unit the farm needs to schedule.
  */
-export function groupFarmableCampaigns(campaigns, now = Date.now()) {
+export function groupFarmableCampaigns(campaigns, now = Date.now(), { allowUnlinkedIds = [] } = {}) {
+  const unlinkedIds = new Set(arr(allowUnlinkedIds).filter(Boolean).map(String));
   const groups = new Map();
   for (const campaign of arr(campaigns)) {
-    if (!isFarmableCampaign(campaign, now)) continue;
+    if (!isFarmableCampaign(campaign, now, { allowUnlinked: unlinkedIds.has(String(campaign?.id)) })) continue;
     const key = campaignGameKey(campaign);
     if (!key) continue;
     let group = groups.get(key);

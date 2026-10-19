@@ -197,7 +197,7 @@ async function runAction(type, payload = {}, { success = '', errorPrefix = '' } 
   actionLocks.delete(key);
   if (response?.ok) {
     applyPayload(response);
-    if (response.warning) showToast(response.warning, 'error', 4200);
+    if (response.warning) showToast(response.warning, 'warn', 4200);
     else if (success) showToast(success, 'success');
     return response;
   }
@@ -296,6 +296,9 @@ function farmBanner() {
   const isError = Boolean(farm.error);
   const names = farmCampaignNames(farm);
   const simultaneous = names.length;
+  const unlinked = farm.manualCampaignId && campaignPool(state.drops).some(
+    (campaign) => campaign.id === farm.manualCampaignId && campaign.linked === false,
+  );
   const title =
     isError
       ? 'Автоферма · нужно внимание'
@@ -317,6 +320,7 @@ function farmBanner() {
         ${farm.channelLogin ? `<button type="button" class="btn btn-sm btn-ghost" data-action="open-channel" data-login="${attr(farm.channelLogin)}">Открыть</button>` : ''}
         <button type="button" class="btn btn-sm btn-danger" data-action="farm-stop">${icon('stop', 10)} Стоп</button>
       </div>
+      ${unlinked ? '<div class="banner-sub is-wrap farm-link-warning">Просмотр без привязки игрового аккаунта. Получение наград зависит от привязки.</div>' : ''}
       ${state.settings?.backgroundWatch === false ? '<div class="banner-sub" style="margin-top:7px">Фоновый просмотр выключен: если свернуть вкладку или переключиться, Twitch может поставить плеер на паузу.</div>' : ''}
     </div>
   </div>`;
@@ -439,12 +443,10 @@ function miniCampaign(campaign) {
   const error = playError?.campaignId === campaign.id ? playError.message : '';
   const note = loading
     ? 'Проверяем кампанию и ищем канал…'
-    : error || unavailable || (needsLink ? 'Проверьте привязку аккаунта. ▶ проверит её заново.' : '');
+    : error || unavailable || (needsLink ? '▶ можно запустить без привязки. Получение наград зависит от привязки аккаунта.' : '');
   const playTitle = unavailable || (playingCampaignId
     ? 'Дождитесь завершения поиска канала'
-    : needsLink
-      ? `Play — проверить привязку и смотреть кампанию «${name}»`
-      : `Play — смотреть кампанию «${name}»`);
+    : `Play — смотреть кампанию «${name}»`);
   const farming = state.farm?.enabled && state.farm.campaignIds?.includes(campaign.id);
   return `<div class="mini${farming ? ' is-farming' : ''}">
     ${thumb(campaign.imageUrl, title, true)}

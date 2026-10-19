@@ -226,9 +226,10 @@ export class FarmService {
     requiredCampaignId = '',
   } = {}) {
     const state = await this.store.get();
-    const groups = sortFarmGroups(groupFarmableCampaigns(campaignPool(state.drops)), {
-      priority: state.settings.farmPriority,
-    });
+    const manualIds = [requiredCampaignId, state.farm.manualCampaignId].filter(Boolean);
+    const groups = sortFarmGroups(groupFarmableCampaigns(campaignPool(state.drops), Date.now(), {
+      allowUnlinkedIds: manualIds,
+    }), { priority: state.settings.farmPriority });
     const preferred = groups.find((group) =>
       group.campaigns.some((campaign) => campaignIds.includes(campaign.id)),
     );
@@ -239,7 +240,12 @@ export class FarmService {
     for (const group of eligibleGroups) {
       const candidates = await this.#collectCandidates(group);
       const target = this.#choose(group, candidates, excludeLogin, { hardExclude, requiredCampaignId });
-      if (target) return target;
+      if (target) {
+        return {
+          ...target,
+          manualCampaignId: manualIds.find((id) => target.campaigns.some((campaign) => campaign.id === id)) || null,
+        };
+      }
     }
     return null;
   }
@@ -262,11 +268,10 @@ export class FarmService {
     const blocked = campaignPlayDisabledReason(campaign);
     if (blocked) return { ok: false, message: blocked };
 
-    // Do not reject an explicit Play using a cached account-link flag. The
-    // user may have connected the game since the last dashboard sync. Also
-    // recheck campaigns whose scheduled start passed while the popup was open.
+    // Account linking is not a playback prerequisite. Refresh only stale or
+    // incomplete metadata, including a campaign whose scheduled start passed.
     if (
-      campaign.linked === false || !campaign.active || campaign.upcoming ||
+      !campaign.active || campaign.upcoming ||
       !campaign.drops?.length || Date.now() - state.drops.lastSync > DROPS_STALE_MS
     ) {
       await this.drops.refresh({ claim: false });
@@ -275,13 +280,10 @@ export class FarmService {
     }
     const refreshedBlock = campaignPlayDisabledReason(campaign);
     if (refreshedBlock) return { ok: false, message: refreshedBlock };
-    if (campaign.linked === false) {
-      return { ok: false, message: 'Сначала привяжите игровой аккаунт на странице кампаний Twitch, затем снова нажмите ▶' };
-    }
     if (!campaign.drops?.length) {
       return { ok: false, message: 'Не удалось загрузить награды кампании. Обновите список и попробуйте снова.' };
     }
-    if (!isFarmableCampaign(campaign)) {
+    if (!isFarmableCampaign(campaign, Date.now(), { allowUnlinked: true })) {
       return { ok: false, message: 'В этой кампании сейчас нет доступных для просмотра наград' };
     }
     const target = await this.pickTarget({
@@ -305,7 +307,13 @@ export class FarmService {
       });
       return { ok: false, message: 'Не удалось открыть вкладку Twitch' };
     }
-    return { ok: true, channel: target.channel };
+    return {
+      ok: true,
+      channel: target.channel,
+      warning: campaign.linked === false
+        ? 'Просмотр запущен без привязки игрового аккаунта. Получение наград зависит от привязки.'
+        : null,
+    };
   }
 
   start() {
@@ -340,6 +348,7 @@ export class FarmService {
         channelLogin: null,
         channelDisplayName: '',
         campaignId: null,
+        manualCampaignId: null,
         campaignName: '',
         campaignIds: [],
         campaignNames: [],
@@ -382,6 +391,7 @@ export class FarmService {
         channelLogin: null,
         channelDisplayName: '',
         campaignId: null,
+        manualCampaignId: null,
         campaignName: '',
         campaignIds: [],
         campaignNames: [],
@@ -406,6 +416,23 @@ export class FarmService {
     return this.#run(() => this.#tick(options));
   }
 
+  /** A raid/redirect must not leave the farm watching an unrelated channel. */
+  handleNavigation(tabId) {
+    return this.#run(async () => {
+      const state = await this.store.get();
+      if (tabId == null || tabId !== state.farm.tabId || !state.settings.autoFarm ||
+          !state.farm.enabled || !state.farm.channelLogin) return;
+      const tab = await this.tabsApi.get(tabId).catch(() => null);
+      if (!tab) return;
+      // Use the browser's actual URL, never a login supplied by a page message.
+      const login = channelLoginFromUrl(tab.pendingUrl || tab.url || '');
+      if (login === state.farm.channelLogin) return;
+      // Revalidate the selected stream: restore it if still eligible, otherwise
+      // find another drops channel. The raid destination is never blindly adopted.
+      return this.#tick({ refreshDrops: false });
+    });
+  }
+
   #currentGameKey(state) {
     const ids = state.farm.campaignIds?.length
       ? state.farm.campaignIds
@@ -417,7 +444,9 @@ export class FarmService {
   /** All still-watchable campaigns of the current game on the current channel. */
   #groupFromFarm(state, now) {
     const key = this.#currentGameKey(state);
-    const group = groupFarmableCampaigns(campaignPool(state.drops), now).find((item) => item.key === key);
+    const group = groupFarmableCampaigns(campaignPool(state.drops), now, {
+      allowUnlinkedIds: [state.farm.manualCampaignId],
+    }).find((item) => item.key === key);
     if (!group) return null;
     const campaigns = group.campaigns.filter((campaign) =>
       isAllowedChannel(campaign, state.farm.channelLogin),
@@ -447,6 +476,7 @@ export class FarmService {
         channelLogin: channel.login,
         channelDisplayName: channel.displayName || channel.login,
         campaignId: primary.id,
+        manualCampaignId: target.manualCampaignId || null,
         campaignName: primary.name,
         campaignIds: target.campaigns.map((campaign) => campaign.id),
         campaignNames: target.campaigns.map((campaign) => campaign.name),
@@ -621,7 +651,7 @@ export class FarmService {
     if (tabId != null) {
       try {
         const tab = await this.tabsApi.get(tabId);
-        const tabUrl = tab?.url || '';
+        const tabUrl = tab?.pendingUrl || tab?.url || '';
         const currentLogin = channelLoginFromUrl(tabUrl);
         // Also navigate when the tab sits on a non-channel Twitch page (for
         // example a stream that ended and redirected to the directory).

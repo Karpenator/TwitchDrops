@@ -125,10 +125,10 @@
     ],
   });
 
-  function availableCampaign({ id, name, game, slug, startsIn = -DAY, endsIn }) {
+  function availableCampaign({ id, name, game, slug, startsIn = -DAY, endsIn, linked = true }) {
     return {
       ...makeCampaign({
-        id, name, game, slug, startsIn, endsIn,
+        id, name, game, slug, startsIn, endsIn, linked,
         drops: [makeDrop({ id: `${id}-reward`, name: 'Демонстрационная награда', required: 60, current: 0 })],
       }),
       isAvailable: true,
@@ -180,7 +180,7 @@
           ['path-of-exile', 'Path of Exile', 'Path of Exile: Livestream Rewards'],
           ['throne-and-liberty', 'Throne and Liberty', 'Throne and Liberty: Adventure Drops'],
         ].map(([slug, game, name]) => availableCampaign({
-          id: `${slug}-campaign`, name, game, slug, endsIn: 7 * DAY,
+          id: `${slug}-campaign`, name, game, slug, endsIn: 7 * DAY, linked: slug !== 'warframe',
         })),
       ],
       lastSync: now - 20_000,
@@ -270,6 +270,7 @@
       channelLogin: null,
       channelDisplayName: '',
       campaignId: null,
+      manualCampaignId: null,
       campaignName: '',
       campaignIds: [],
       campaignNames: [],
@@ -366,6 +367,7 @@
       channelLogin: 'shroud',
       channelDisplayName: 'shroud',
       campaignId: 'rust-campaign',
+      manualCampaignId: null,
       campaignName: 'Rust: Twitch Drops',
       campaignIds: ['rust-campaign', 'rust-prime'],
       campaignNames: ['Rust: Twitch Drops', 'Rust: Prime Rewards'],
@@ -384,7 +386,7 @@
     const selected = all.find((campaign) => campaign.id === campaignId);
     if (!selected) return { ok: false, error: 'Кампания не найдена' };
     if (selected.upcoming) return { ok: false, error: 'Кампания ещё не началась' };
-    if (!selected.active || selected.completed || !selected.linked) {
+    if (!selected.active || selected.completed) {
       return { ok: false, error: 'Кампания недоступна для просмотра' };
     }
     const campaigns = [selected, ...all.filter((campaign) =>
@@ -400,6 +402,7 @@
       channelLogin: login,
       channelDisplayName: login,
       campaignId: selected.id,
+      manualCampaignId: selected.id,
       campaignName: selected.name,
       campaignIds: campaigns.map((campaign) => campaign.id),
       campaignNames: campaigns.map((campaign) => campaign.name),
@@ -410,7 +413,12 @@
       lastProgressAt: Date.now(),
       error: null,
     };
-    return payload();
+    return {
+      ...payload(),
+      warning: selected.linked === false
+        ? 'Просмотр запущен без привязки игрового аккаунта. Получение наград зависит от привязки.'
+        : null,
+    };
   }
 
   function stopFarm() {
@@ -421,6 +429,7 @@
       channelLogin: null,
       channelDisplayName: '',
       campaignId: null,
+      manualCampaignId: null,
       campaignName: '',
       campaignIds: [],
       campaignNames: [],

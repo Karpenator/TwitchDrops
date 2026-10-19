@@ -374,7 +374,7 @@
     if (location.href === lastUrl) return;
     lastUrl = location.href;
     const login = getChannelLogin();
-    if (login) safeSend({ type: 'TAB_CHANNEL', payload: { login } });
+    safeSend({ type: 'TAB_CHANNEL', payload: { login } });
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

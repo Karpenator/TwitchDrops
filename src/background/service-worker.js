@@ -405,6 +405,7 @@ async function handleContentMessage(message, sender) {
       };
     }
     case 'TAB_CHANNEL':
+      await farm.handleNavigation(tabId);
       return { ok: true };
     default:
       return { ok: false, error: 'Неизвестное сообщение' };
@@ -536,7 +537,7 @@ async function handleMessage(message, sender) {
       }
       await scheduleAlarms();
       notifyStateChanged();
-      return { ...(await statePayload()) };
+      return { ...(await statePayload()), warning: result.warning || null };
     }
 
     case 'FARM_SKIP': {
@@ -602,6 +603,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     .catch((error) => {
       console.warn('[TwitchAutoPilot] alarm failed', alarm.name, error);
     });
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (typeof changeInfo.url !== 'string') return;
+  return ensureReady()
+    .then(() => farm.handleNavigation(tabId))
+    .catch(() => {});
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {

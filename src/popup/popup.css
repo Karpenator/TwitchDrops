@@ -977,6 +977,11 @@ button:disabled {
   border-color: rgba(67, 224, 141, 0.32);
 }
 
+.farm-link-warning {
+  margin-top: 7px;
+  color: var(--amber);
+}
+
 .mini-note {
   margin-top: 4px;
   color: var(--text-3);
@@ -1691,6 +1696,11 @@ button.chip:hover {
   border-color: rgba(255, 114, 136, 0.35);
   background: #2a1820;
   color: #ffc0ca;
+}
+
+.toast.is-warn {
+  color: var(--amber);
+  border-color: rgba(255, 200, 90, 0.4);
 }
 
 .toast.is-success {

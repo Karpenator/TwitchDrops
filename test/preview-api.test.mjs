@@ -210,3 +210,18 @@ test('Play selects an available campaign and reuses the demo farm tab', async ()
   assert.equal(response.ok, false);
   assert.match(response.error, /ещё не началась/);
 });
+
+
+test('Play starts the genuinely unlinked demo campaign with a non-blocking warning', async () => {
+  const { runtime } = makeApi();
+  const before = await send(runtime, { type: 'GET_STATE' });
+  assert.equal(before.state.drops.available.find((campaign) => campaign.id === 'warframe-campaign').linked, false);
+  const response = await send(runtime, { type: 'FARM_PLAY', campaignId: 'warframe-campaign' });
+  assert.equal(response.ok, true);
+  assert.match(response.warning, /без привязки/);
+  assert.equal(response.state.farm.campaignId, 'warframe-campaign');
+  assert.equal(response.state.farm.manualCampaignId, 'warframe-campaign');
+  assert.equal(response.state.settings.autoFarm, true);
+  const stopped = await send(runtime, { type: 'STOP_FARM' });
+  assert.equal(stopped.state.farm.manualCampaignId, null);
+});
