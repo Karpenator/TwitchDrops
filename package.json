@@ -1,0 +1,18 @@
+{
+  "name": "twitchautopilot",
+  "version": "1.3.0",
+  "private": true,
+  "description": "TwitchAutoPilot — Chrome extension for tracking and claiming Twitch drops and channel points.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "icons": "node scripts/generate-icons.mjs",
+    "package": "node scripts/package.mjs",
+    "preview": "node scripts/preview-server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "SEE LICENSE IN LICENSE"
+}

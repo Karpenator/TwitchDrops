@@ -1,0 +1,63 @@
+{
+  "manifest_version": 3,
+  "name": "TwitchAutoPilot — дропсы и очки Twitch",
+  "short_name": "TwitchAutoPilot",
+  "description": "Прогресс дропсов, автосбор наград и бесплатных бонусов каналов Twitch. Только ваши честно заработанные награды.",
+  "version": "1.3.0",
+  "minimum_chrome_version": "111",
+  "permissions": [
+    "alarms",
+    "cookies",
+    "notifications",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://gql.twitch.tv/*",
+    "https://www.twitch.tv/*",
+    "https://player.twitch.tv/*"
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_title": "TwitchAutoPilot — дропсы и очки Twitch",
+    "default_icon": {
+      "16": "src/icons/icon16.png",
+      "32": "src/icons/icon32.png",
+      "48": "src/icons/icon48.png",
+      "128": "src/icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "src/icons/icon16.png",
+    "32": "src/icons/icon32.png",
+    "48": "src/icons/icon48.png",
+    "128": "src/icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.twitch.tv/*",
+        "https://player.twitch.tv/*"
+      ],
+      "js": [
+        "src/content/visibility-guard.js",
+        "src/content/page-bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.twitch.tv/*",
+        "https://player.twitch.tv/*"
+      ],
+      "js": [
+        "src/content/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

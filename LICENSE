@@ -1,0 +1,68 @@
+TwitchAutoPilot License
+Version 1.0, 19 October 2026
+
+Copyright (c) 2026 Karpenator (GitHub: @Karpenator)
+https://github.com/Karpenator/TwitchDrops
+All rights reserved.
+
+This License governs the TwitchAutoPilot browser extension, including its
+source code, documentation, icons and other assets (the "Software"), from
+version 1.3.0 onward.
+
+1. GRANT OF USE
+
+You are granted a worldwide, royalty-free, non-exclusive, non-transferable
+license to download, install and use unmodified copies of the Software for
+personal, non-commercial purposes.
+
+2. RESTRICTIONS
+
+Except for the Licensor — the GitHub account @Karpenator — and any person or
+entity that has received prior written permission from the Licensor, you may
+not:
+
+  (a) modify, adapt, translate, or create derivative works based on the
+      Software;
+  (b) sell, resell, rent, lease, sublicense, or otherwise commercially
+      exploit the Software or any part of it;
+  (c) distribute, publish, or make available any modified version or
+      derivative work of the Software;
+  (d) remove, alter, or obscure this License, copyright notices, or
+      attribution.
+
+3. REDISTRIBUTION OF UNMODIFIED COPIES
+
+You may redistribute unmodified copies of the Software free of charge,
+provided that this License is included in full and the original repository is
+credited. Redistribution for any payment or other commercial benefit requires
+prior written permission from the Licensor.
+
+4. RIGHTS RESERVED BY THE LICENSOR
+
+The Licensor retains the exclusive rights to modify, distribute, publish,
+sublicense, and sell the Software and derivative works, and may grant
+exceptions to this License in writing.
+
+5. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+6. TERMINATION
+
+Any breach of this License automatically terminates the rights granted to you.
+You must then stop using and delete all copies of the Software. Sections 2, 4,
+5 and 6 survive termination.
+
+7. EARLIER VERSIONS
+
+Versions 1.2.0 and earlier were released under the name "DropPilot" under the
+MIT License and remain available under those terms.
+
+8. CONTACT
+
+Requests for permission, including commercial use: GitHub @Karpenator

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=400, initial-scale=1" />
+    <title>TwitchAutoPilot — дропсы и очки Twitch</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" width="30" height="30">
+              <defs>
+                <linearGradient id="brandGradient" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stop-color="#b380ff" />
+                  <stop offset="1" stop-color="#7a2fff" />
+                </linearGradient>
+              </defs>
+              <path
+                d="M16 3.5C11.1 10 6.5 15 6.5 20.2A9.5 9.5 0 0 0 16 29.7a9.5 9.5 0 0 0 9.5-9.5C25.5 15 20.9 10 16 3.5Z"
+                fill="url(#brandGradient)"
+              />
+              <path
+                d="M12.1 19.1 15 22l5.1-5.4"
+                fill="none"
+                stroke="#fff"
+                stroke-width="2.3"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </span>
+          <span class="brand-text">
+            <span class="brand-name">TwitchAutoPilot</span>
+            <span class="brand-sub">дропсы и очки</span>
+          </span>
+        </div>
+        <div class="top-actions">
+          <button id="refreshBtn" class="icon-btn" type="button" title="Обновить данные" aria-label="Обновить данные">
+            <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
+              <path
+                d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.9"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+          <label class="master" title="Автосбор наград">
+            <input type="checkbox" id="masterToggle" aria-label="Автосбор наград" />
+            <span class="master-track"><span class="master-thumb"></span></span>
+          </label>
+        </div>
+      </header>
+
+      <div id="userBar" class="user-bar hidden"></div>
+
+      <nav class="tabs" role="tablist" aria-label="Разделы TwitchAutoPilot">
+        <button type="button" class="tab is-active" data-tab="drops" role="tab" aria-selected="true">
+          <span>Дропсы</span>
+          <span class="tab-badge hidden" id="dropsBadge" aria-hidden="true"></span>
+        </button>
+        <button type="button" class="tab" data-tab="points" role="tab" aria-selected="false">
+          <span>Очки</span>
+          <span class="tab-badge hidden" id="pointsBadge" aria-hidden="true"></span>
+        </button>
+        <button type="button" class="tab" data-tab="settings" role="tab" aria-selected="false">
+          <span>Настройки</span>
+        </button>
+      </nav>
+
+      <main class="content" id="content">
+        <section class="panel" id="panel-drops" role="tabpanel">
+          <div class="skeleton-wrap">
+            <div class="skeleton skeleton-stats"></div>
+            <div class="skeleton skeleton-card"></div>
+            <div class="skeleton skeleton-card"></div>
+          </div>
+        </section>
+        <section class="panel hidden" id="panel-points" role="tabpanel"></section>
+        <section class="panel hidden" id="panel-settings" role="tabpanel"></section>
+      </main>
+
+      <footer class="statusbar">
+        <div class="status-left">
+          <span class="dot" id="syncDot"></span>
+          <span id="syncText">Подключаемся к Twitch…</span>
+        </div>
+        <span class="version" id="versionLabel">v1.0.0</span>
+      </footer>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <div class="modal hidden" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-card">
+        <div class="modal-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="26" height="26">
+            <path
+              d="M12 3.2 14.7 9l6.3.6-4.8 4.2 1.4 6.2L12 16.8 6.4 20l1.4-6.2L3 9.6 9.3 9 12 3.2Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </div>
+        <h2 id="modalTitle">Включить автоферму?</h2>
+        <p>
+          TwitchAutoPilot откроет <strong>настоящую вкладку Twitch</strong> с каналом, где идут дропсы, и будет
+          переключать каналы, если стрим закончился. Вкладку можно свернуть, но не закрывать.
+        </p>
+        <p class="modal-note">
+          Автоматический просмотр может нарушать правила Twitch. Используйте функцию осознанно и на свой
+          риск. TwitchAutoPilot не подделывает просмотры.
+        </p>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-action="modal-cancel">Не сейчас</button>
+          <button type="button" class="btn btn-primary" data-action="modal-confirm">Включить</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

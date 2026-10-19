@@ -1,0 +1,54 @@
+{
+  "currentUser": {
+    "dropCampaigns": [
+      {
+        "id": "campaign-rust",
+        "name": "Rust: Twitch Drops",
+        "status": "ACTIVE",
+        "startAt": "2026-10-10T00:00:00Z",
+        "endAt": "2026-10-25T00:00:00Z",
+        "game": {
+          "id": "263490",
+          "name": "Rust",
+          "displayName": "Rust",
+          "slug": "rust",
+          "boxArtURL": "https://static-cdn.jtvnw.net/ttv-boxart/263490-285x380.jpg"
+        }
+      },
+      {
+        "id": "campaign-apex",
+        "name": "Apex Legends: Battle Pass",
+        "status": "ACTIVE",
+        "startAt": "2026-10-01T00:00:00Z",
+        "endAt": "2026-11-01T00:00:00Z",
+        "game": {
+          "id": "511224",
+          "name": "Apex Legends",
+          "displayName": "Apex Legends",
+          "slug": "apex-legends"
+        }
+      },
+      {
+        "id": "campaign-upcoming",
+        "name": "Marvel Rivals: Season 4",
+        "status": "UPCOMING",
+        "startAt": "2026-10-20T00:00:00Z",
+        "endAt": "2026-11-20T00:00:00Z",
+        "game": {
+          "id": "30921",
+          "name": "Marvel Rivals",
+          "displayName": "Marvel Rivals",
+          "slug": "marvel-rivals"
+        }
+      },
+      {
+        "id": "campaign-expired",
+        "name": "Old Campaign",
+        "status": "EXPIRED",
+        "startAt": "2026-09-01T00:00:00Z",
+        "endAt": "2026-10-01T00:00:00Z",
+        "game": { "id": "1", "name": "Old", "displayName": "Old", "slug": "old" }
+      }
+    ]
+  }
+}

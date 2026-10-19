@@ -1,0 +1,32 @@
+{
+  "community": {
+    "channel": {
+      "id": "37402112",
+      "displayName": "shroud",
+      "broadcaster": {
+        "id": "37402112",
+        "login": "shroud",
+        "displayName": "shroud",
+        "profileImageURL": "https://static-cdn.jtvnw.net/jtv_user_pictures/shroud-profile_image.png",
+        "stream": {
+          "id": "stream-123",
+          "title": "Rust drops",
+          "viewersCount": 18432,
+          "game": {
+            "id": "263490",
+            "name": "Rust",
+            "displayName": "Rust",
+            "slug": "rust"
+          }
+        }
+      },
+      "self": {
+        "communityPoints": {
+          "balance": 12450,
+          "availableClaim": { "id": "claim-abc" },
+          "activeMultipliers": [{ "factor": 1.2 }, { "factor": 1.1 }]
+        }
+      }
+    }
+  }
+}

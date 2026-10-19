@@ -1,0 +1,137 @@
+{
+  "currentUser": {
+    "inventory": {
+      "dropCampaignsInProgress": [
+        {
+          "id": "campaign-rust",
+          "name": "Rust: Twitch Drops",
+          "status": "ACTIVE",
+          "startAt": "2026-10-10T00:00:00Z",
+          "endAt": "2026-10-25T00:00:00Z",
+          "game": {
+            "id": "263490",
+            "name": "Rust",
+            "displayName": "Rust",
+            "slug": "rust",
+            "boxArtURL": "https://static-cdn.jtvnw.net/ttv-boxart/263490-285x380.jpg"
+          },
+          "allow": {
+            "isEnabled": true,
+            "channels": [{ "id": "37402112", "name": "shroud", "displayName": "shroud" }]
+          },
+          "accountLinkURL": "https://www.twitch.tv/settings/connections",
+          "self": { "isAccountConnected": true },
+          "timeBasedDrops": [
+            {
+              "id": "drop-1",
+              "name": "Desert Raider",
+              "startAt": "2026-10-10T00:00:00Z",
+              "endAt": "2026-10-25T00:00:00Z",
+              "requiredMinutesWatched": 60,
+              "preconditionDrops": [],
+              "benefitEdges": [
+                {
+                  "benefit": {
+                    "id": "benefit-1",
+                    "name": "Desert Raider Set",
+                    "distributionType": "DIRECT_ENTITLEMENT",
+                    "imageAssetURL": "https://static-cdn.jtvnw.net/benefits/desert.png"
+                  }
+                }
+              ],
+              "self": {
+                "dropInstanceID": "user-1#campaign-rust#drop-1",
+                "currentMinutesWatched": 60,
+                "isClaimed": false
+              }
+            },
+            {
+              "id": "drop-2",
+              "name": "Tool Crate",
+              "startAt": "2026-10-10T00:00:00Z",
+              "endAt": "2026-10-25T00:00:00Z",
+              "requiredMinutesWatched": 120,
+              "preconditionDrops": [],
+              "preconditions": { "isMet": false },
+              "benefitEdges": [
+                {
+                  "benefit": {
+                    "id": "benefit-2",
+                    "name": "Tool Crate",
+                    "distributionType": "DIRECT_ENTITLEMENT"
+                  }
+                }
+              ],
+              "self": {
+                "dropInstanceID": "user-1#campaign-rust#drop-2",
+                "currentMinutesWatched": 90,
+                "isClaimed": false
+              }
+            },
+            {
+              "id": "drop-3",
+              "name": "Weapon Skins",
+              "startAt": "2026-10-10T00:00:00Z",
+              "endAt": "2026-10-25T00:00:00Z",
+              "requiredMinutesWatched": 180,
+              "preconditionDrops": [],
+              "benefitEdges": [
+                {
+                  "benefit": {
+                    "id": "benefit-3",
+                    "name": "Weapon Skins",
+                    "distributionType": "DIRECT_ENTITLEMENT"
+                  }
+                }
+              ],
+              "self": {
+                "dropInstanceID": "user-1#campaign-rust#drop-3",
+                "currentMinutesWatched": 180,
+                "isClaimed": true
+              }
+            }
+          ]
+        },
+        {
+          "id": "campaign-delta",
+          "name": "Delta Force: Season Rewards",
+          "status": "ACTIVE",
+          "startAt": "2026-10-15T00:00:00Z",
+          "endAt": "2026-10-30T00:00:00Z",
+          "game": {
+            "id": "41000",
+            "name": "Delta Force",
+            "displayName": "Delta Force",
+            "slug": "delta-force"
+          },
+          "allow": { "isEnabled": false, "channels": [] },
+          "self": { "isAccountConnected": false },
+          "timeBasedDrops": [
+            {
+              "id": "delta-drop-1",
+              "name": "Patch",
+              "requiredMinutesWatched": 30,
+              "benefitEdges": [],
+              "self": {
+                "currentMinutesWatched": 30,
+                "isClaimed": true
+              }
+            }
+          ]
+        },
+        {
+          "id": "campaign-expired",
+          "name": "Old Campaign",
+          "status": "EXPIRED",
+          "startAt": "2026-09-01T00:00:00Z",
+          "endAt": "2026-10-01T00:00:00Z",
+          "game": { "id": "1", "name": "Old", "displayName": "Old", "slug": "old" },
+          "allow": { "isEnabled": true, "channels": [] },
+          "self": { "isAccountConnected": true },
+          "timeBasedDrops": []
+        }
+      ],
+      "gameEventDrops": []
+    }
+  }
+}

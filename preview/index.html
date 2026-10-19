@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TwitchAutoPilot — интерактивное превью</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #08080b;
+        --surface: #121218;
+        --border: #292934;
+        --text: #f6f6f8;
+        --muted: #9a9aa8;
+        --accent: #a970ff;
+        --green: #43e08d;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        min-height: 100vh;
+        background:
+          radial-gradient(60% 60% at 85% 0%, rgba(145, 70, 255, 0.22), transparent 65%),
+          radial-gradient(50% 40% at 0% 20%, rgba(80, 34, 170, 0.16), transparent 65%),
+          var(--bg);
+        color: var(--text);
+        font-family: "Segoe UI", system-ui, -apple-system, "Inter", Roboto, Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .page {
+        width: min(1180px, calc(100% - 48px));
+        margin: 0 auto;
+        padding: 30px 0 48px;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 52px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        text-decoration: none;
+        color: inherit;
+      }
+      .brand img {
+        width: 40px;
+        height: 40px;
+        border-radius: 12px;
+        box-shadow: 0 10px 30px rgba(145, 70, 255, 0.28);
+      }
+      .brand-name {
+        display: block;
+        font-size: 18px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+      }
+      .brand-sub {
+        display: block;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 7px 12px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: rgba(18, 18, 24, 0.7);
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--muted);
+      }
+      .badge-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 8px rgba(67, 224, 141, 0.7);
+      }
+      main {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 460px;
+        gap: 64px;
+        align-items: center;
+      }
+      h1 {
+        margin: 0 0 18px;
+        max-width: 640px;
+        font-size: clamp(34px, 4.4vw, 54px);
+        line-height: 1.03;
+        letter-spacing: -0.045em;
+        font-weight: 800;
+      }
+      h1 span {
+        color: var(--accent);
+      }
+      .lead {
+        margin: 0 0 26px;
+        max-width: 560px;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.65;
+      }
+      .features {
+        display: grid;
+        gap: 11px;
+        margin-bottom: 30px;
+      }
+      .feature {
+        display: flex;
+        align-items: flex-start;
+        gap: 11px;
+      }
+      .feature-icon {
+        display: grid;
+        place-items: center;
+        flex: 0 0 auto;
+        width: 32px;
+        height: 32px;
+        border-radius: 9px;
+        background: rgba(145, 70, 255, 0.12);
+        border: 1px solid rgba(169, 112, 255, 0.2);
+        color: var(--accent);
+      }
+      .feature-title {
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .feature-text {
+        margin-top: 1px;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--muted);
+      }
+      .install {
+        padding: 15px 17px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: rgba(18, 18, 24, 0.72);
+        max-width: 560px;
+      }
+      .install-title {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-bottom: 8px;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .install ol {
+        margin: 0;
+        padding-left: 18px;
+        color: #c7c7d2;
+        font-size: 12px;
+        line-height: 1.75;
+      }
+      code {
+        padding: 1px 5px;
+        border-radius: 5px;
+        background: rgba(255, 255, 255, 0.07);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 11px;
+        color: #dcd2ff;
+      }
+      .stage {
+        position: relative;
+        width: 460px;
+        max-width: 100%;
+      }
+      .stage::before {
+        content: "";
+        position: absolute;
+        inset: 8% 2% 4%;
+        border-radius: 40px;
+        background: rgba(145, 70, 255, 0.22);
+        filter: blur(55px);
+        z-index: -1;
+      }
+      .browser {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 19px;
+        background: linear-gradient(160deg, #1a1a22, #0d0d11);
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+      }
+      .browser-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        height: 28px;
+        padding: 0 6px 6px;
+      }
+      .browser-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #3b3b48;
+      }
+      .browser-url {
+        flex: 1;
+        margin-left: 7px;
+        padding: 3px 9px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.045);
+        color: #6f6f7e;
+        font-size: 9px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      iframe {
+        display: block;
+        width: 400px;
+        max-width: 100%;
+        height: 600px;
+        border: 0;
+        border-radius: 12px;
+        background: #0a0a0d;
+        overflow: hidden;
+      }
+      .stage-caption {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 12px;
+        padding: 0 6px;
+        color: var(--muted);
+        font-size: 10.5px;
+      }
+      .stage-caption a {
+        color: #cbb2ff;
+        text-decoration: none;
+        font-weight: 700;
+      }
+      .stage-caption a:hover {
+        text-decoration: underline;
+      }
+      .demo-note {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        margin-top: 18px;
+        max-width: 560px;
+        padding: 10px 12px;
+        border: 1px solid rgba(255, 200, 90, 0.18);
+        border-radius: 10px;
+        background: rgba(255, 200, 90, 0.055);
+        color: #e8c77e;
+        font-size: 11px;
+        line-height: 1.5;
+      }
+      footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        margin-top: 64px;
+        padding-top: 18px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        color: #6e6e7c;
+        font-size: 10.5px;
+      }
+      @media (max-width: 960px) {
+        .page {
+          width: min(680px, calc(100% - 32px));
+          padding-top: 20px;
+        }
+        header {
+          margin-bottom: 34px;
+        }
+        main {
+          grid-template-columns: 1fr;
+          gap: 42px;
+        }
+        .stage {
+          margin: 0 auto;
+        }
+        h1 {
+          font-size: clamp(32px, 9vw, 44px);
+        }
+        footer {
+          margin-top: 40px;
+          flex-direction: column;
+        }
+      }
+      @media (max-width: 460px) {
+        .page {
+          width: calc(100% - 20px);
+        }
+        .stage {
+          width: 100%;
+        }
+        iframe {
+          width: 100%;
+          height: 600px;
+        }
+        .browser {
+          padding: 6px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header>
+        <a class="brand" href="./index.html">
+          <img src="../src/icons/icon128.png" alt="" />
+          <span>
+            <span class="brand-name">TwitchAutoPilot</span>
+            <span class="brand-sub">Twitch drops &amp; points</span>
+          </span>
+        </a>
+        <span class="badge"><span class="badge-dot"></span> интерактивное демо</span>
+      </header>
+
+      <main>
+        <section>
+          <h1>Дропсы и очки Twitch — <span>на автопилоте</span></h1>
+          <p class="lead">
+            Расширение для Chrome, которое следит за прогрессом кампаний, забирает готовые награды и
+            бесплатные бонусы каналов. Всё работает в вашей текущей сессии Twitch и остаётся локально.
+          </p>
+
+          <div class="features">
+            <div class="feature">
+              <span class="feature-icon">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M20 8H4v5h16V8Z" />
+                  <path d="M12 8v13M4 13v8h16v-8" />
+                  <path d="M12 8C10.5 8 7.8 7.7 7.8 5.6A2.1 2.1 0 0 1 12 5a2.1 2.1 0 0 1 4.2.6C16.2 7.7 13.5 8 12 8Z" />
+                </svg>
+              </span>
+              <div>
+                <div class="feature-title">Автосбор дропсов</div>
+                <div class="feature-text">Прогресс каждой награды, уведомления и кнопка «Забрать», когда прогресс дошёл до 100%.</div>
+              </div>
+            </div>
+
+            <div class="feature">
+              <span class="feature-icon">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="m12 3 2.6 5.7 6.2.6-4.7 4.2 1.4 6.1L12 16.5 6.5 19.6l1.4-6.1L3.2 9.3l6.2-.6L12 3Z" />
+                </svg>
+              </span>
+              <div>
+                <div class="feature-title">Очки каналов</div>
+                <div class="feature-text">Балансы на всех открытых и отслеживаемых каналах, автоматический клик по бесплатному сундуку.</div>
+              </div>
+            </div>
+
+            <div class="feature">
+              <span class="feature-icon">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="6" width="18" height="12" rx="2" />
+                  <path d="M8 21h8M12 18v3" />
+                </svg>
+              </span>
+              <div>
+                <div class="feature-title">Автоферма без подделок</div>
+                <div class="feature-text">Держит настоящую вкладку Twitch на канале, который закрывает сразу несколько кампаний одной игры, и переходит к следующей игре.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="install">
+            <div class="install-title">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 3v12M7 10l5 5 5-5" />
+                <path d="M4 19h16" />
+              </svg>
+              Как установить
+            </div>
+            <ol>
+              <li>Откройте <code>chrome://extensions</code> и включите «Режим разработчика».</li>
+              <li>Нажмите «Загрузить распакованное» и выберите папку проекта.</li>
+              <li>Войдите на <code>twitch.tv</code> и откройте иконку TwitchAutoPilot.</li>
+            </ol>
+          </div>
+
+          <div class="demo-note">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="8.5" />
+              <path d="M12 11v5M12 8h.01" />
+            </svg>
+            <span>
+              Это демо с вымышленными данными: оно показывает реальный интерфейс расширения. Переключатели,
+              кнопки «Забрать» и автоферма работают локально и ничего не отправляют в Twitch.
+            </span>
+          </div>
+        </section>
+
+        <aside class="stage">
+          <div class="browser">
+            <div class="browser-bar">
+              <span class="browser-dot"></span>
+              <span class="browser-dot"></span>
+              <span class="browser-dot"></span>
+              <span class="browser-url">chrome-extension://twitchautopilot/src/popup/popup.html</span>
+            </div>
+            <iframe src="app.html" title="Интерфейс TwitchAutoPilot" loading="eager"></iframe>
+          </div>
+          <div class="stage-caption">
+            <span>Нажмите на вкладки и кнопки — демо интерактивное.</span>
+            <a href="app.html" target="_blank" rel="noopener">Открыть отдельно ↗</a>
+          </div>
+        </aside>
+      </main>
+
+      <footer>
+        <span>TwitchAutoPilot · неофициальное расширение, не связано с Twitch Interactive.</span>
+        <span>Данные не покидают ваш браузер.</span>
+      </footer>
+    </div>
+  </body>
+</html>
