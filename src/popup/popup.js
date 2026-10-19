@@ -5,7 +5,12 @@ import {
   formatTimeLeft,
 } from '../shared/time.js';
 import { formatPoints } from '../shared/points-model.js';
-import { campaignCategoryUrl, campaignPool, sanitizeImageUrl } from '../shared/drops-model.js';
+import {
+  campaignCategoryUrl,
+  campaignPlayDisabledReason,
+  campaignPool,
+  sanitizeImageUrl,
+} from '../shared/drops-model.js';
 import { INTERVAL_OPTIONS } from '../shared/settings.js';
 import { normalizeLogin } from '../shared/twitch-url.js';
 import { DROPS_URL, EXTENSION_VERSION } from '../shared/constants.js';
@@ -129,6 +134,7 @@ let reloadTimer = null;
 let autoRefreshDone = false;
 const actionLocks = new Set();
 let playingCampaignId = null;
+let playError = null;
 
 // ---------------------------------------------------------------------------
 // Messaging
@@ -171,6 +177,7 @@ async function refresh(scope = 'all', { silent = false } = {}) {
   const response = await sendRaw({ type: 'REFRESH', scope });
   busy = false;
   if (response.ok) {
+    playError = null;
     applyPayload(response);
     const errors = response.errors || {};
     const firstError = errors.drops || errors.points;
@@ -425,18 +432,19 @@ function campaignCard(campaign) {
 function miniCampaign(campaign) {
   const title = campaign.game?.name || 'Twitch';
   const name = campaign.name || title;
-  const upcoming = campaign.upcoming || (campaign.startsAt && campaign.startsAt > Date.now());
-  const unavailable = upcoming
-    ? 'Кампания ещё не началась'
-    : campaign.linked === false
-      ? 'Сначала привяжите игровой аккаунт на Twitch'
-      : campaign.completed
-        ? 'Все награды уже получены'
-        : campaign.expired || (campaign.endsAt && campaign.endsAt <= Date.now())
-          ? 'Кампания закончилась'
-          : '';
+  const unavailable = campaignPlayDisabledReason(campaign);
+  const upcoming = unavailable === 'Кампания ещё не началась';
+  const needsLink = campaign.linked === false && !unavailable;
   const loading = playingCampaignId === campaign.id;
-  const playTitle = unavailable || `Play — смотреть кампанию «${name}»`;
+  const error = playError?.campaignId === campaign.id ? playError.message : '';
+  const note = loading
+    ? 'Проверяем кампанию и ищем канал…'
+    : error || unavailable || (needsLink ? 'Проверьте привязку аккаунта. ▶ проверит её заново.' : '');
+  const playTitle = unavailable || (playingCampaignId
+    ? 'Дождитесь завершения поиска канала'
+    : needsLink
+      ? `Play — проверить привязку и смотреть кампанию «${name}»`
+      : `Play — смотреть кампанию «${name}»`);
   const farming = state.farm?.enabled && state.farm.campaignIds?.includes(campaign.id);
   return `<div class="mini${farming ? ' is-farming' : ''}">
     ${thumb(campaign.imageUrl, title, true)}
@@ -444,6 +452,8 @@ function miniCampaign(campaign) {
       <div class="mini-title" title="${attr(title)}">${esc(title)}</div>
       ${name !== title ? `<div class="mini-sub" title="${attr(name)}">${esc(name)}</div>` : ''}
       <div class="mini-sub">${esc(upcoming ? `старт ${formatDateTime(campaign.startsAt)}` : formatTimeLeft(campaign.endsAt))}${farming ? ' · фармится' : ''}</div>
+      ${note ? `<div class="mini-note${error ? ' is-error' : needsLink ? ' is-warn' : ''}" role="status">${esc(note)}</div>` : ''}
+      ${needsLink ? `<button type="button" class="pill is-link mini-link" data-action="open-url" data-url="${attr(campaign.accountLinkUrl || DROPS_URL)}">${icon('link', 10)} Привязать аккаунт</button>` : ''}
     </div>
     <div class="mini-actions">
       <button type="button" class="play-btn" data-action="farm-play" data-campaign-id="${attr(campaign.id)}" title="${attr(playTitle)}" aria-label="${attr(playTitle)}" aria-busy="${loading}" ${unavailable || playingCampaignId ? 'disabled' : ''}>${loading ? '<span class="spinner"></span>' : icon('play', 16)}</button>
@@ -1020,9 +1030,13 @@ document.addEventListener('click', async (event) => {
       const campaignId = actionEl.dataset.campaignId || '';
       if (!campaignId || playingCampaignId) break;
       playingCampaignId = campaignId;
+      playError = null;
       render();
       try {
-        await runAction('FARM_PLAY', { campaignId }, { success: 'Просмотр выбранной кампании запущен' });
+        const response = await runAction('FARM_PLAY', { campaignId }, { success: 'Просмотр выбранной кампании запущен' });
+        if (!response?.ok) {
+          playError = { campaignId, message: response?.error || 'Не удалось переключить кампанию. Попробуйте ещё раз.' };
+        }
       } finally {
         playingCampaignId = null;
         render();

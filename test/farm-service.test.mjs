@@ -939,3 +939,80 @@ test('remaining campaigns of the current game get a turn before another category
   assert.equal(state.farm.campaignId, 'rust-second');
   assert.equal(state.farm.channelLogin, 'summit1g');
 });
+
+
+test('Play rechecks a cached unlinked campaign even when the rest of the dashboard is fresh', async (t) => {
+  const hydrated = availableDelta();
+  const state = baseState(farmableCampaign());
+  state.drops.available = [{ ...hydrated, linked: false }];
+  const { service, tabs, calls } = makeService(t, {
+    store: memoryStore(state), gql: deltaGql(),
+    dropsRefresh: async () => { state.drops.available = [hydrated]; },
+  });
+  await service.start();
+  const tabId = state.farm.tabId;
+  assert.equal((await service.play(hydrated.id)).ok, true);
+  assert.equal(calls.refresh, 1);
+  assert.equal(state.farm.tabId, tabId);
+  assert.equal(state.farm.campaignId, hydrated.id);
+  assert.equal(state.farm.channelLogin, 'delta_streamer');
+  assert.equal(tabs.actions.created.length, 1);
+  await service.tick();
+  assert.equal(state.farm.campaignId, hydrated.id);
+});
+
+test('a genuinely unlinked campaign explains what to do and keeps the current farm untouched', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [{ ...availableDelta(), linked: false }];
+  const { service, calls, tabs } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
+  await service.start();
+  const before = structuredClone(state.farm);
+  const result = await service.play('delta-available');
+  assert.equal(result.ok, false);
+  assert.match(result.message, /привяжите игровой аккаунт/);
+  assert.equal(calls.refresh, 1, 'check Twitch before rejecting the cached connection flag');
+  assert.deepEqual(state.farm, before);
+  assert.equal(state.settings.autoFarm, true);
+  assert.equal(tabs.actions.created.length, 1);
+});
+
+test('a campaign can be played after its start time even if its saved upcoming flag was not refreshed', async (t) => {
+  const hydrated = availableDelta();
+  const state = baseState(farmableCampaign());
+  state.drops.available = [{ ...hydrated, active: false, upcoming: true, startsAt: NOW - 1 }];
+  const { service, calls } = makeService(t, {
+    store: memoryStore(state), gql: deltaGql(),
+    dropsRefresh: async () => { state.drops.available = [hydrated]; },
+  });
+  assert.equal((await service.play(hydrated.id)).ok, true);
+  assert.equal(calls.refresh, 1);
+  assert.equal(state.farm.campaignId, hydrated.id);
+});
+
+test('Play checks account connection again after refreshing stale reward metadata', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [{ ...availableDelta(), drops: [] }];
+  const { service, tabs } = makeService(t, {
+    store: memoryStore(state), gql: deltaGql(),
+    dropsRefresh: async () => { state.drops.available = [{ ...availableDelta(), linked: false }]; },
+  });
+  const result = await service.play('delta-available');
+  assert.equal(result.ok, false);
+  assert.match(result.message, /привяжите игровой аккаунт/);
+  assert.equal(tabs.actions.created.length, 0);
+  assert.equal(state.settings.autoFarm, false);
+});
+
+test('Play handles a campaign disappearing during refresh without starting another one', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [{ ...availableDelta(), linked: false }];
+  const { service, tabs } = makeService(t, {
+    store: memoryStore(state), gql: deltaGql(),
+    dropsRefresh: async () => { state.drops.available = []; },
+  });
+  const result = await service.play('delta-available');
+  assert.equal(result.ok, false);
+  assert.match(result.message, /Кампания не найдена/);
+  assert.equal(tabs.actions.created.length, 0);
+  assert.equal(state.settings.autoFarm, false);
+});

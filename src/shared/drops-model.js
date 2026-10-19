@@ -402,6 +402,24 @@ export function isClaimResponseSuccessful(payload) {
 }
 
 /**
+ * Hard blockers for the Play button. Account connection is intentionally not
+ * one of them: a saved `linked: false` must allow an explicit fresh check.
+ * A cached UPCOMING flag must not keep Play disabled after its start time.
+ */
+export function campaignPlayDisabledReason(campaign, now = Date.now()) {
+  if (!campaign?.id) return 'Кампания не найдена. Обновите список.';
+  const upcoming = campaign.startsAt
+    ? campaign.startsAt > now
+    : campaign.upcoming || campaign.status === 'UPCOMING';
+  if (upcoming) return 'Кампания ещё не началась';
+  if (campaign.completed) return 'Все награды уже получены';
+  if (campaign.expired || (campaign.endsAt && campaign.endsAt <= now)) {
+    return 'Кампания закончилась';
+  }
+  return '';
+}
+
+/**
  * Campaign suitable for the real-tab auto-farm: active, linked, has rewards
  * left to watch and has a category we can search. Fully earned rewards stay
  * claimable but must not keep the farm watching a finished game.

@@ -33,7 +33,7 @@ function area(initial) {
   };
 }
 
-async function makeWorker(t, { autoClaimDrops = true } = {}) {
+async function makeWorker(t, { autoClaimDrops = true, cachedDelta = {} } = {}) {
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: NOW });
   const rust = rawCampaign('rust', 'Rust', 'rust', 'rust_streamer');
   const delta = rawCampaign('delta', 'Delta Force', 'delta-force', 'delta_streamer');
@@ -45,7 +45,7 @@ async function makeWorker(t, { autoClaimDrops = true } = {}) {
   initial.settings.farmStrategy = 'top';
   initial.drops.lastSync = NOW;
   initial.drops.campaigns = [normalizeCampaign(rust, { now: NOW, userId: 'viewer-id' })];
-  initial.drops.available = [{ ...normalizeCampaign(delta, { now: NOW, userId: 'viewer-id' }), isAvailable: true, isInProgress: false }];
+  initial.drops.available = [{ ...normalizeCampaign(delta, { now: NOW, userId: 'viewer-id' }), isAvailable: true, isInProgress: false, ...cachedDelta }];
   const local = area({ [STORAGE.state]: initial });
   const session = area({ [STORAGE.session]: {
     token: 'test-token', deviceId: 'test-device', uuid: 'test-session', user: initial.user,
@@ -240,4 +240,34 @@ test('the farm alarm refreshes completion even with a long drops sync interval',
   assert.equal(response.state.farm.campaignId, 'delta');
   assert.equal(response.state.drops.campaigns[0].completed, true);
   assert.equal(gqlCalls.filter((call) => call.operationName === 'Inventory').length, 1);
+});
+
+
+test('FARM_PLAY rechecks a restored unlinked snapshot and switches the existing tab after connection', async (t) => {
+  const { send, tabs, gqlCalls } = await makeWorker(t, { cachedDelta: { linked: false } });
+  const started = await send({ type: 'START_FARM' });
+  const tabId = started.state.farm.tabId;
+  const response = await send({ type: 'FARM_PLAY', campaignId: 'delta' });
+  assert.equal(response.ok, true);
+  assert.equal(response.state.farm.campaignId, 'delta');
+  assert.equal(response.state.farm.tabId, tabId);
+  assert.equal(response.state.drops.available[0].linked, true);
+  assert.equal(tabs.size, 1);
+  assert.equal(tabs.get(tabId).url, 'https://www.twitch.tv/delta_streamer');
+  assert.equal(gqlCalls.filter((query) => query.operationName === 'Inventory').length, 1);
+});
+
+test('FARM_PLAY reports an actually missing account connection without disrupting the current tab', async (t) => {
+  const { send, tabs, delta, gqlCalls } = await makeWorker(t, { cachedDelta: { linked: false } });
+  const started = await send({ type: 'START_FARM' });
+  delta.self.isAccountConnected = false;
+  const response = await send({ type: 'FARM_PLAY', campaignId: 'delta' });
+  assert.equal(response.ok, false);
+  assert.match(response.error, /привяжите игровой аккаунт/);
+  const snapshot = await send({ type: 'GET_STATE' });
+  assert.equal(snapshot.state.farm.campaignId, 'rust');
+  assert.equal(snapshot.state.settings.autoFarm, true);
+  assert.equal(tabs.size, 1);
+  assert.equal(tabs.get(started.state.farm.tabId).url, 'https://www.twitch.tv/rust_streamer');
+  assert.equal(gqlCalls.filter((query) => query.operationName === 'Inventory').length, 1);
 });

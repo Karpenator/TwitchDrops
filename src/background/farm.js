@@ -2,6 +2,7 @@ import { queries, directoryFallbackPayload } from '../shared/constants.js';
 import {
   campaignGameKey,
   campaignPool,
+  campaignPlayDisabledReason,
   groupFarmableCampaigns,
   groupWatchMark,
   isFarmableCampaign,
@@ -258,26 +259,26 @@ export class FarmService {
   async #play(campaignId) {
     let state = await this.store.get();
     let campaign = campaignPool(state.drops).find((item) => item.id === campaignId);
-    if (!campaign) return { ok: false, message: 'Кампания не найдена. Обновите список.' };
-    if (campaign.upcoming || (campaign.startsAt && campaign.startsAt > Date.now())) {
-      return { ok: false, message: 'Кампания ещё не началась' };
-    }
-    if (campaign.linked === false) {
-      return { ok: false, message: 'Сначала привяжите игровой аккаунт на странице кампаний Twitch' };
-    }
-    if (campaign.completed) return { ok: false, message: 'Все награды кампании уже получены' };
-    if (campaign.expired || (campaign.endsAt && campaign.endsAt <= Date.now())) {
-      return { ok: false, message: 'Кампания уже закончилась' };
-    }
+    const blocked = campaignPlayDisabledReason(campaign);
+    if (blocked) return { ok: false, message: blocked };
 
-    // Old stored dashboards (or failed detail batches) may lack reward data.
-    // Fetch real metadata instead of inventing an unrestricted watch target.
-    if (!campaign.drops?.length || Date.now() - state.drops.lastSync > DROPS_STALE_MS) {
+    // Do not reject an explicit Play using a cached account-link flag. The
+    // user may have connected the game since the last dashboard sync. Also
+    // recheck campaigns whose scheduled start passed while the popup was open.
+    if (
+      campaign.linked === false || !campaign.active || campaign.upcoming ||
+      !campaign.drops?.length || Date.now() - state.drops.lastSync > DROPS_STALE_MS
+    ) {
       await this.drops.refresh({ claim: false });
       state = await this.store.get();
       campaign = campaignPool(state.drops).find((item) => item.id === campaignId);
     }
-    if (!campaign?.drops?.length) {
+    const refreshedBlock = campaignPlayDisabledReason(campaign);
+    if (refreshedBlock) return { ok: false, message: refreshedBlock };
+    if (campaign.linked === false) {
+      return { ok: false, message: 'Сначала привяжите игровой аккаунт на странице кампаний Twitch, затем снова нажмите ▶' };
+    }
+    if (!campaign.drops?.length) {
       return { ok: false, message: 'Не удалось загрузить награды кампании. Обновите список и попробуйте снова.' };
     }
     if (!isFarmableCampaign(campaign)) {

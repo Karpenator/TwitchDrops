@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import {
   DROP_STATUS,
   campaignCategoryUrl,
+  campaignPlayDisabledReason,
   campaignGameKey,
   campaignPool,
   campaignWatchMark,
@@ -455,4 +456,22 @@ test('campaign category links repair old saved URLs from game metadata', () => {
   };
   assert.equal(campaignCategoryUrl(campaign), 'https://www.twitch.tv/directory/category/warhammer-40-000-space-marine-ii?filter=drops');
   assert.equal(campaignCategoryUrl({ game: { name: 'Dungeons &amp; Dragons' } }), 'https://www.twitch.tv/directory/category/dungeons-and-dragons?filter=drops');
+});
+
+
+test('Play permits an explicit account-link recheck instead of disabling a cached unlinked campaign', () => {
+  const campaign = { ...rustCampaign(), linked: false };
+  assert.equal(campaignPlayDisabledReason(campaign, NOW), '');
+  assert.equal(isFarmableCampaign(campaign, NOW), false, 'automatic farming still requires a connected account');
+});
+
+test('Play explains real blockers and uses the scheduled time instead of a stale upcoming flag', () => {
+  const campaign = rustCampaign();
+  assert.match(campaignPlayDisabledReason(null, NOW), /не найдена/);
+  assert.match(campaignPlayDisabledReason({ ...campaign, startsAt: NOW + 1 }, NOW), /не началась/);
+  assert.match(campaignPlayDisabledReason({ ...campaign, upcoming: true, startsAt: null }, NOW), /не началась/);
+  assert.match(campaignPlayDisabledReason({ ...campaign, endsAt: NOW }, NOW), /закончилась/);
+  assert.match(campaignPlayDisabledReason({ ...campaign, expired: true }, NOW), /закончилась/);
+  assert.match(campaignPlayDisabledReason({ ...campaign, completed: true }, NOW), /получены/);
+  assert.equal(campaignPlayDisabledReason({ ...campaign, upcoming: true, active: false, startsAt: NOW }, NOW), '');
 });
