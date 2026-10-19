@@ -5,12 +5,12 @@ import {
   campaignPlayDisabledReason,
   groupFarmableCampaigns,
   groupWatchMark,
-  isFarmableCampaign,
+  canStartCampaignPlayback,
   pickCandidate,
   sortFarmGroups,
 } from '../shared/drops-model.js';
 import { channelLoginFromUrl, channelUrl } from '../shared/twitch-url.js';
-import { describeError } from '../shared/errors.js';
+import { ERROR_CODES, describeError } from '../shared/errors.js';
 
 const STALE_PROGRESS_MS = 3 * 60_000;
 const DROPS_STALE_MS = 60_000;
@@ -228,7 +228,7 @@ export class FarmService {
     const state = await this.store.get();
     const manualIds = [requiredCampaignId, state.farm.manualCampaignId].filter(Boolean);
     const groups = sortFarmGroups(groupFarmableCampaigns(campaignPool(state.drops), Date.now(), {
-      allowUnlinkedIds: manualIds,
+      manualCampaignIds: manualIds,
     }), { priority: state.settings.farmPriority });
     const preferred = groups.find((group) =>
       group.campaigns.some((campaign) => campaignIds.includes(campaign.id)),
@@ -274,16 +274,20 @@ export class FarmService {
       !campaign.active || campaign.upcoming ||
       !campaign.drops?.length || Date.now() - state.drops.lastSync > DROPS_STALE_MS
     ) {
-      await this.drops.refresh({ claim: false });
+      try {
+        await this.drops.refresh({ claim: false });
+      } catch (error) {
+        if (error?.code === ERROR_CODES.AUTH || error?.code === ERROR_CODES.INTEGRITY) throw error;
+        // A metadata outage must not prevent an explicit category switch when
+        // a live source can still be found using the known game/allowlist.
+        this.logger.warn?.('[TwitchAutoPilot] Play metadata refresh failed', error);
+      }
       state = await this.store.get();
       campaign = campaignPool(state.drops).find((item) => item.id === campaignId);
     }
     const refreshedBlock = campaignPlayDisabledReason(campaign);
     if (refreshedBlock) return { ok: false, message: refreshedBlock };
-    if (!campaign.drops?.length) {
-      return { ok: false, message: 'Не удалось загрузить награды кампании. Обновите список и попробуйте снова.' };
-    }
-    if (!isFarmableCampaign(campaign, Date.now(), { allowUnlinked: true })) {
+    if (!canStartCampaignPlayback(campaign)) {
       return { ok: false, message: 'В этой кампании сейчас нет доступных для просмотра наград' };
     }
     const target = await this.pickTarget({
@@ -307,13 +311,14 @@ export class FarmService {
       });
       return { ok: false, message: 'Не удалось открыть вкладку Twitch' };
     }
-    return {
-      ok: true,
-      channel: target.channel,
-      warning: campaign.linked === false
-        ? 'Просмотр запущен без привязки игрового аккаунта. Получение наград зависит от привязки.'
-        : null,
-    };
+    const warnings = [];
+    if (!campaign.drops?.length) {
+      warnings.push('Трансляция запущена. Twitch пока не вернул данные о наградах; прогресс и получение дропсов ещё не подтверждены.');
+    }
+    if (campaign.linked === false) {
+      warnings.push('Просмотр запущен без привязки игрового аккаунта. Получение наград зависит от привязки.');
+    }
+    return { ok: true, channel: target.channel, warning: warnings.join(' ') || null };
   }
 
   start() {
@@ -445,7 +450,7 @@ export class FarmService {
   #groupFromFarm(state, now) {
     const key = this.#currentGameKey(state);
     const group = groupFarmableCampaigns(campaignPool(state.drops), now, {
-      allowUnlinkedIds: [state.farm.manualCampaignId],
+      manualCampaignIds: [state.farm.manualCampaignId],
     }).find((item) => item.key === key);
     if (!group) return null;
     const campaigns = group.campaigns.filter((campaign) =>
@@ -491,6 +496,12 @@ export class FarmService {
       return current;
     });
     await this.#applyTabSettings(tabId);
+    try {
+      await this.tabsApi.sendMessage(tabId, { type: 'FARM_RESUME' });
+    } catch {
+      // A navigating tab resumes when its content script gets GET_GUARD and
+      // the new player emits canplay, rather than waiting for the next alarm.
+    }
     this.onUpdate?.();
     return tabId;
   }

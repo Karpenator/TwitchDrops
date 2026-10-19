@@ -92,6 +92,9 @@
     } catch {
       // Ignore dispatcher failures; the guard also reads the stored flags on boot.
     }
+    // Starting an owned farm player is independent of visibility spoofing.
+    // If navigation has not produced a video yet, canplay below retries it.
+    if (farm) resumePlayback();
   }
 
   function pickVideo() {
@@ -416,6 +419,11 @@
 
     return false;
   });
+
+  document.addEventListener('canplay', (event) => {
+    if (String(event.target?.tagName || '').toUpperCase() !== 'VIDEO') return;
+    if (readFlag(storageArea('session'), FARM_KEY, false)) resumePlayback();
+  }, true);
 
   syncSession();
   syncIntegrity();

@@ -241,3 +241,18 @@ test('the demo groups multiple campaigns into one category without dropping any 
   assert.equal(played.state.farm.campaignId, 'apex-community');
   assert.ok(played.state.farm.campaignIds.includes('apex-campaign'));
 });
+
+test('Play without demo reward metadata switches the same tab with a non-blocking warning and no fake rewards', async () => {
+  const { runtime } = makeApi();
+  const before = await send(runtime, { type: 'START_FARM' });
+  const played = await send(runtime, { type: 'FARM_PLAY', campaignId: 'apex-community' });
+  assert.equal(played.ok, true);
+  assert.match(played.warning, /Трансляция запущена/);
+  assert.equal(played.state.farm.tabId, before.state.farm.tabId);
+  assert.equal(played.state.farm.campaignId, 'apex-community');
+  assert.equal(played.state.farm.gameSlug, 'apex-legends');
+  assert.deepEqual(played.state.drops.available.find(({ id }) => id === 'apex-community').drops, []);
+  const switched = await send(runtime, { type: 'FARM_PLAY', campaignId: 'apex-campaign' });
+  assert.equal(switched.warning, null);
+  assert.equal(switched.state.farm.campaignIds.includes('apex-community'), false, 'unselected empty campaigns must not count as earning rewards');
+});

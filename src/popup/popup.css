@@ -990,7 +990,8 @@ button:disabled {
   border-color: rgba(67, 224, 141, 0.32);
 }
 
-.farm-link-warning {
+.farm-link-warning,
+.farm-rewards-warning {
   margin-top: 7px;
   color: var(--amber);
 }

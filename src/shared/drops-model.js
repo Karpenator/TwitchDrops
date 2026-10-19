@@ -447,6 +447,19 @@ export function isFarmableCampaign(campaign, now = Date.now(), { allowUnlinked =
   );
 }
 
+/**
+ * Explicit Play starts a stream even before Twitch returns reward details.
+ * This is playback permission, NOT evidence of earnable/earned rewards:
+ * ordinary automatic selection still uses isFarmableCampaign above.
+ */
+export function canStartCampaignPlayback(campaign, now = Date.now()) {
+  if (campaignPlayDisabledReason(campaign, now)) return false;
+  if (isFarmableCampaign(campaign, now, { allowUnlinked: true })) return true;
+  if (!campaign.active || arr(campaign.drops).length) return false;
+  return Boolean(campaign.game?.name && (campaign.allowedChannels?.length ||
+    campaign.game.slug || campaign.game.id || campaign.game.name !== 'Twitch'));
+}
+
 /** Inventory wins duplicate ids; unstarted dashboard campaigns also need a turn. */
 export function campaignPool(drops) {
   const byId = new Map();
@@ -588,15 +601,21 @@ function sortGroupCampaigns(campaigns) {
 }
 
 /**
- * Group farmable campaigns by game. Every campaign in a group can be advanced
- * by watching the same channel at the same time (Twitch's overlapping-campaign
+ * Group farmable campaigns by game. Known rewards can advance by watching
+ * the same eligible channel at the same time (Twitch's overlapping-campaign
  * behavior), so a group is the smallest unit the farm needs to schedule.
+ * Only an explicitly selected manual id may stay in playback while rewards
+ * are unavailable; no placeholder drops or progress are created for it.
  */
-export function groupFarmableCampaigns(campaigns, now = Date.now(), { allowUnlinkedIds = [] } = {}) {
+export function groupFarmableCampaigns(campaigns, now = Date.now(), { allowUnlinkedIds = [], manualCampaignIds = [] } = {}) {
   const unlinkedIds = new Set(arr(allowUnlinkedIds).filter(Boolean).map(String));
+  const manualIds = new Set(arr(manualCampaignIds).filter(Boolean).map(String));
   const groups = new Map();
   for (const campaign of arr(campaigns)) {
-    if (!isFarmableCampaign(campaign, now, { allowUnlinked: unlinkedIds.has(String(campaign?.id)) })) continue;
+    const watchable = manualIds.has(String(campaign?.id))
+      ? canStartCampaignPlayback(campaign, now)
+      : isFarmableCampaign(campaign, now, { allowUnlinked: unlinkedIds.has(String(campaign?.id)) });
+    if (!watchable) continue;
     const key = campaignGameKey(campaign);
     if (!key) continue;
     let group = groups.get(key);

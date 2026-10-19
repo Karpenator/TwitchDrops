@@ -299,17 +299,19 @@ function farmBanner() {
   const isError = Boolean(farm.error);
   const names = farmCampaignNames(farm);
   const simultaneous = names.length;
-  const unlinked = farm.manualCampaignId && campaignPool(state.drops).some(
-    (campaign) => campaign.id === farm.manualCampaignId && campaign.linked === false,
-  );
+  const manual = campaignPool(state.drops).find((campaign) => campaign.id === farm.manualCampaignId);
+  const unlinked = manual?.linked === false;
+  const awaitingRewards = manual && !manual.drops?.length;
   const title =
     isError
       ? 'Автоферма · нужно внимание'
-      : simultaneous > 1
-        ? `Автоферма · ${simultaneous} ${plural(simultaneous, 'кампания', 'кампании', 'кампаний')} сразу`
-        : farm.enabled
-          ? 'Автоферма работает'
-          : 'Автоферма запускается';
+      : awaitingRewards
+        ? 'Автоферма · просмотр категории'
+        : simultaneous > 1
+          ? `Автоферма · ${simultaneous} ${plural(simultaneous, 'кампания', 'кампании', 'кампаний')} сразу`
+          : farm.enabled
+            ? 'Автоферма работает'
+            : 'Автоферма запускается';
   const sub = farm.error || (farm.channelLogin
     ? `${farm.channelDisplayName || farm.channelLogin} · ${farm.gameName || 'Twitch'}${names.length ? ` · ${names.join(' + ')}` : ''}`
     : 'Ищем канал с активными дропсами…');
@@ -323,6 +325,7 @@ function farmBanner() {
         ${farm.channelLogin ? `<button type="button" class="btn btn-sm btn-ghost" data-action="open-channel" data-login="${attr(farm.channelLogin)}">Открыть</button>` : ''}
         <button type="button" class="btn btn-sm btn-danger" data-action="farm-stop">${icon('stop', 10)} Стоп</button>
       </div>
+      ${awaitingRewards ? '<div class="banner-sub is-wrap farm-rewards-warning">Данные о наградах пока недоступны; прогресс и получение дропсов ещё не подтверждены.</div>' : ''}
       ${unlinked ? '<div class="banner-sub is-wrap farm-link-warning">Просмотр без привязки игрового аккаунта. Получение наград зависит от привязки.</div>' : ''}
       ${state.settings?.backgroundWatch === false ? '<div class="banner-sub" style="margin-top:7px">Фоновый просмотр выключен: если свернуть вкладку или переключиться, Twitch может поставить плеер на паузу.</div>' : ''}
     </div>
@@ -456,7 +459,9 @@ function miniCategory(group) {
     : `Play — смотреть кампанию «${name}»`);
   const farmIds = state.farm?.enabled ? state.farm.campaignIds || [] : [];
   const farming = group.campaigns.some((item) => farmIds.includes(item.id));
-  const watching = farmIds.includes(campaign.id) ? ' · фармится' : farming ? ' · смотрим категорию' : '';
+  const watching = farmIds.includes(campaign.id)
+    ? campaign.drops?.length ? ' · фармится' : ' · просмотр'
+    : farming ? ' · смотрим категорию' : '';
   const multiple = group.campaigns.length > 1;
   const count = multiple ? `${group.campaigns.length} ${plural(group.campaigns.length, 'кампания', 'кампании', 'кампаний')} · ` : '';
   const selection = multiple

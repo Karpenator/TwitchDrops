@@ -55,7 +55,7 @@ async function makeWorker(t, { autoClaimDrops = true, cachedDelta = {} } = {}) {
   const alarms = new Map();
   const tabs = new Map();
   const gqlCalls = [];
-  const api = { deltaLive: true, rustLive: true, streamGate: null };
+  const api = { deltaLive: true, rustLive: true, deltaDetailsMissing: false, streamGate: null };
   let nextTabId = 100;
   const chrome = {
     storage: { local, session },
@@ -107,7 +107,8 @@ async function makeWorker(t, { autoClaimDrops = true, cachedDelta = {} } = {}) {
       case 'ViewerDropsDashboard':
         return { data: { currentUser: { dropCampaigns: [rust, delta].map(({ timeBasedDrops, self, allow, ...metadata }) => metadata) } } };
       case 'DropCampaignDetails':
-        return { data: { user: { dropCampaign: structuredClone(payload.variables.dropID === 'rust' ? rust : delta) } } };
+        return { data: { user: { dropCampaign: payload.variables.dropID === 'delta' && api.deltaDetailsMissing
+          ? null : structuredClone(payload.variables.dropID === 'rust' ? rust : delta) } } };
       case 'VideoPlayerStreamInfoOverlayChannel': {
         const login = payload.variables.channel;
         if (api.streamGate) await api.streamGate(login);
@@ -349,4 +350,37 @@ test('a stale browser navigation event cannot undo a newer explicit Play selecti
   assert.equal(snapshot.state.farm.campaignId, 'delta');
   assert.equal(tabs.get(tabId).url, 'https://www.twitch.tv/delta_streamer');
   assert.equal(gqlCalls.length, before, 'read the actual tab URL instead of trusting an old event');
+});
+
+test('FARM_PLAY switches the existing tab despite missing rewards, preserves selection and later accepts real progress', async (t) => {
+  const { send, api, tabs, delta, listeners, alarms } = await makeWorker(t, { cachedDelta: { drops: [], totalDrops: 0 } });
+  api.deltaDetailsMissing = true;
+  const started = await send({ type: 'START_FARM' });
+  const tabId = started.state.farm.tabId;
+  assert.equal(started.state.farm.campaignId, 'rust', 'automatic selection must not start the empty campaign');
+  const played = await send({ type: 'FARM_PLAY', campaignId: 'delta' });
+  assert.equal(played.ok, true);
+  assert.match(played.warning, /Трансляция запущена/);
+  assert.match(played.warning, /ещё не подтверждены/);
+  assert.equal(played.state.farm.tabId, tabId);
+  assert.equal(played.state.farm.manualCampaignId, 'delta');
+  assert.equal(played.state.farm.campaignId, 'delta');
+  assert.deepEqual(played.state.drops.available[0].drops, []);
+  assert.equal(tabs.get(tabId).url, 'https://www.twitch.tv/delta_streamer');
+  assert.equal(tabs.size, 1);
+  assert.equal(alarms.has(ALARMS.farm), true);
+  t.mock.timers.tick(2 * 60_000);
+  await listeners.alarm({ name: ALARMS.farm });
+  let current = await send({ type: 'GET_STATE' });
+  assert.equal(current.state.farm.campaignId, 'delta');
+  assert.equal(current.state.farm.tabId, tabId);
+  api.deltaDetailsMissing = false;
+  delta.timeBasedDrops[0].self.currentMinutesWatched = 5;
+  t.mock.timers.tick(2 * 60_000);
+  await listeners.alarm({ name: ALARMS.farm });
+  current = await send({ type: 'GET_STATE' });
+  assert.equal(current.state.farm.campaignId, 'delta');
+  assert.equal(current.state.drops.available[0].drops[0].currentMinutes, 5);
+  assert.equal(current.state.farm.lastProgressMark, 5);
+  assert.equal(tabs.size, 1);
 });

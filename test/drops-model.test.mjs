@@ -7,6 +7,7 @@ import {
   DROP_STATUS,
   campaignCategoryUrl,
   campaignPlayDisabledReason,
+  canStartCampaignPlayback,
   campaignGameKey,
   campaignPool,
   campaignWatchMark,
@@ -605,4 +606,34 @@ test('the category Play target defaults to a watchable campaign but preserves ex
   assert.equal(pickAvailableCampaign(campaigns, { now: NOW, preferredIds: ['future'] }).id, 'future');
   assert.match(campaignPlayDisabledReason(pickAvailableCampaign(campaigns, { now: NOW, preferredIds: ['future'] }), NOW), /не началась/);
   assert.equal(pickAvailableCampaign([], { now: NOW }), null);
+});
+
+test('missing rewards allow explicit category playback but not ordinary farm eligibility', () => {
+  const campaign = { ...farmableCampaignFixture({ id: 'manual', linked: false }), drops: [], totalDrops: 0 };
+  const before = structuredClone(campaign);
+  assert.equal(canStartCampaignPlayback(campaign, NOW), true);
+  assert.equal(isFarmableCampaign(campaign, NOW, { allowUnlinked: true }), false);
+  assert.equal(groupFarmableCampaigns([campaign], NOW).length, 0);
+  assert.equal(groupFarmableCampaigns([campaign], NOW, { allowUnlinkedIds: [campaign.id] }).length, 0);
+  const groups = groupFarmableCampaigns([campaign], NOW, { manualCampaignIds: [campaign.id] });
+  assert.equal(groups.length, 1);
+  assert.deepEqual(groups[0].campaigns, [campaign]);
+  assert.equal(groups[0].dropsLeft, 0);
+  assert.deepEqual(campaign, before, 'playback permission must not create rewards or progress');
+});
+
+test('manual playback permission cannot admit other empty campaigns or bypass real reward conditions', () => {
+  const selected = { ...farmableCampaignFixture({ id: 'selected' }), drops: [] };
+  const other = { ...selected, id: 'other' };
+  const future = { ...selected, id: 'future', startsAt: NOW + 1 };
+  const ended = { ...selected, id: 'ended', endsAt: NOW };
+  const completed = { ...selected, id: 'completed', completed: true };
+  const missingGame = { ...selected, id: 'missing-game', game: { name: 'Twitch', slug: '', id: '' }, allowedChannels: [] };
+  const blocked = farmableCampaignFixture({ id: 'blocked' });
+  blocked.drops = blocked.drops.map((drop) => ({ ...drop, preconditionsMet: false }));
+  for (const campaign of [future, ended, completed, missingGame, blocked]) {
+    assert.equal(canStartCampaignPlayback(campaign, NOW), false, campaign.id);
+  }
+  const groups = groupFarmableCampaigns([selected, other, blocked], NOW, { manualCampaignIds: ['selected', 'blocked'] });
+  assert.deepEqual(groups.flatMap((group) => group.campaigns.map((campaign) => campaign.id)), ['selected']);
 });

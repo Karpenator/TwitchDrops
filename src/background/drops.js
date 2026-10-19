@@ -192,10 +192,24 @@ export class DropsService {
       [...mergedInventory, ...mergedDashboard],
       campaignPool(previous.drops),
     );
+    const previousById = new Map((sameUser ? campaignPool(previous.drops) : [])
+      .map((campaign) => [campaign.id, campaign]));
+    const normalizeWithKnownRestrictions = (raw) => {
+      const campaign = normalizeCampaign(withCategorySlug(raw), { userId, now });
+      const cached = previousById.get(campaign?.id);
+      if (campaign && cached) {
+        // A missing details response is not permission to forget a known
+        // allowlist or pretend that an unlinked account became connected.
+        if (raw.allow == null) campaign.allowedChannels = cached.allowedChannels || [];
+        if (raw.self?.isAccountConnected == null) campaign.linked = cached.linked !== false;
+        if (!campaign.accountLinkUrl) campaign.accountLinkUrl = cached.accountLinkUrl || '';
+      }
+      return campaign;
+    };
     const inProgress = inventoryResult.status === 'rejected' && sameUser
       ? previous.drops.campaigns
       : mergedInventory
-          .map((raw) => normalizeCampaign(withCategorySlug(raw), { userId, now }))
+          .map(normalizeWithKnownRestrictions)
           .filter(Boolean)
           .map((campaign) => ({ ...campaign, isInProgress: true, isAvailable: false }));
     const inventoryIds = new Set(inProgress.map((campaign) => campaign.id));
@@ -203,7 +217,7 @@ export class DropsService {
     const availableCampaigns = dashboardResult.status === 'rejected' && sameUser
       ? previous.drops.available
       : mergedDashboard
-          .map((raw) => normalizeCampaign(withCategorySlug(raw), { userId, now }))
+          .map(normalizeWithKnownRestrictions)
           .filter(Boolean);
     for (const campaign of availableCampaigns) {
       if (inventoryIds.has(campaign.id) || campaign.expired || campaign.completed) continue;

@@ -5,7 +5,9 @@ import { fileURLToPath } from 'node:url';
 
 import { FarmService } from '../src/background/farm.js';
 import { createDefaultState, normalizeState } from '../src/background/state.js';
-import { normalizeCampaign, normalizeCampaignList } from '../src/shared/drops-model.js';
+import { normalizeCampaign, normalizeCampaignList, isFarmableCampaign } from '../src/shared/drops-model.js';
+import { ERROR_CODES, TwitchApiError } from '../src/shared/errors.js';
+import { DROPS_TAG_ID } from '../src/shared/constants.js';
 
 const NOW = Date.parse('2026-10-19T12:00:00Z');
 
@@ -632,9 +634,9 @@ test('a hidden farm tab with background watch off is reported', async (t) => {
 
   assert.match(store.state.farm.error, /Фоновый просмотр/);
   assert.equal(
-    tabs.messages.some((entry) => entry.message.type === 'FARM_RESUME'),
-    false,
-    'nothing to resume: the player is not paused',
+    tabs.messages.filter((entry) => entry.message.type === 'FARM_RESUME').length,
+    1,
+    'only initial startup requests playback; the healthy watchdog must not repeat it',
   );
 });
 
@@ -873,16 +875,26 @@ test('Play refreshes old metadata before choosing an allowed channel', async (t)
   assert.equal(state.farm.channelLogin, 'delta_streamer');
 });
 
-test('Play does not fabricate eligibility when reward details are unavailable', async (t) => {
+test('Play starts a real source without reward details and does not fabricate eligibility or progress', async (t) => {
   const state = baseState(farmableCampaign());
   state.drops.available = [{ ...availableDelta(), drops: [], totalDrops: 0 }];
+  const before = structuredClone(state.drops.available[0]);
   const { service, calls, tabs } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
   const result = await service.play('delta-available');
-  assert.equal(result.ok, false);
-  assert.match(result.message, /Не удалось загрузить/);
+  assert.equal(result.ok, true);
+  assert.match(result.warning, /Трансляция запущена/);
+  assert.match(result.warning, /пока не вернул данные о наградах/);
   assert.equal(calls.refresh, 1);
-  assert.equal(tabs.actions.created.length, 0);
-  assert.equal(state.settings.autoFarm, false);
+  assert.equal(tabs.actions.created.length, 1);
+  assert.equal(state.settings.autoFarm, true);
+  assert.equal(state.farm.channelLogin, 'delta_streamer');
+  assert.equal(state.farm.manualCampaignId, 'delta-available');
+  assert.equal(tabs.tabs.get(state.farm.tabId).url, 'https://www.twitch.tv/delta_streamer');
+  assert.ok(tabs.messages.some(({ tabId, message }) => tabId === state.farm.tabId && message.type === 'FARM_RESUME'));
+  assert.deepEqual(state.drops.available[0], before, 'no placeholder drops, minutes, linkage or claim ids');
+  assert.equal(isFarmableCampaign(state.drops.available[0]), false, 'ordinary auto-farming still requires real rewards');
+  await service.tick({ refreshDrops: false });
+  assert.equal(state.farm.campaignId, 'delta-available', 'the next check must not undo manual playback');
 });
 
 test('all allowlisted channels are checked, including channels after the old twentieth cutoff', async (t) => {
@@ -1203,3 +1215,127 @@ test('idle switching still enforces the three-minute navigation cooldown', async
   assert.notEqual(state.farm.channelLogin, login);
   assert.equal(state.farm.lastSwitchAt, NOW);
 });
+
+test('Play without reward details switches the existing tab and survives service restart, but Stop clears the opt-in', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [availableDelta({ drops: [] })];
+  const store = memoryStore(state);
+  const { service, tabs, gql } = makeService(t, { store, gql: deltaGql() });
+  await service.start();
+  assert.equal(state.farm.campaignId, 'campaign-farm', 'unknown rewards must not be selected automatically');
+  const tabId = state.farm.tabId;
+  assert.equal((await service.play('delta-available')).ok, true);
+  assert.equal(state.farm.tabId, tabId);
+  assert.equal(tabs.actions.created.length, 1);
+  assert.equal(tabs.tabs.get(tabId).url, 'https://www.twitch.tv/delta_streamer');
+  store.state = normalizeState(structuredClone(store.state));
+  const restarted = new FarmService({ store, gql, drops: { async refresh() {} }, tabsApi: tabs });
+  await restarted.tick({ refreshDrops: false });
+  assert.equal(store.state.farm.campaignId, 'delta-available');
+  assert.equal(store.state.farm.manualCampaignId, 'delta-available');
+  assert.equal(store.state.farm.tabId, tabId);
+  await restarted.stop();
+  assert.equal(store.state.farm.manualCampaignId, null);
+  await restarted.start();
+  assert.equal(store.state.farm.campaignId, 'campaign-farm');
+});
+
+test('an open category with no rewards yet starts a matching stream from the Drops-filtered directory', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [availableDelta({ drops: [], channels: [] })];
+  const gql = deltaGql();
+  gql.request = async (payload) => {
+    gql.calls.request.push(payload);
+    return { data: { game: { slug: 'delta-force', streams: { edges: [
+      { node: { broadcaster: { login: 'wrong_game' }, game: { name: 'Rust', slug: 'rust' }, viewersCount: 1000 } },
+      { node: { broadcaster: { login: 'drops_streamer' }, game: { name: 'Delta Force', slug: 'delta-force' }, viewersCount: 100 } },
+    ] } } } };
+  };
+  const { service, tabs } = makeService(t, { store: memoryStore(state), gql });
+  assert.equal((await service.play('delta-available')).ok, true);
+  assert.equal(state.farm.channelLogin, 'drops_streamer');
+  assert.equal(tabs.tabs.get(state.farm.tabId).url, 'https://www.twitch.tv/drops_streamer');
+  assert.deepEqual(gql.calls.request[0].variables.options.tags, [DROPS_TAG_ID]);
+  assert.equal(gql.calls.request[0].variables.slug, 'delta-force');
+  assert.deepEqual(state.drops.available[0].drops, []);
+});
+
+test('unknown rewards do not bypass a campaign allowlist or switch to a source that only covers other campaigns', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [availableDelta({ drops: [] }), availableDelta({ id: 'other-delta', channels: [] })];
+  const gql = deltaGql({ delta_streamer: streamPayload('delta_streamer', { live: false }) });
+  gql.request = async () => ({ data: { game: { slug: 'delta-force', streams: { edges: [
+    { node: { broadcaster: { login: 'other_streamer' }, game: { name: 'Delta Force', slug: 'delta-force' }, viewersCount: 1000 } },
+  ] } } } });
+  const { service, tabs } = makeService(t, { store: memoryStore(state), gql });
+  await service.start();
+  const before = structuredClone(state.farm);
+  const result = await service.play('delta-available');
+  assert.equal(result.ok, false);
+  assert.match(result.message, /нет подходящих каналов/);
+  assert.deepEqual(state.farm, before);
+  assert.equal(state.settings.autoFarm, true);
+  assert.equal(tabs.actions.created.length, 1);
+});
+
+test('a metadata-only outage does not block Play if the cached category still has a live allowed source', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [availableDelta({ drops: [] })];
+  const { service, tabs } = makeService(t, {
+    store: memoryStore(state), gql: deltaGql(),
+    dropsRefresh: async () => { throw new TwitchApiError('metadata offline', { code: ERROR_CODES.NETWORK }); },
+  });
+  await service.start();
+  const tabId = state.farm.tabId;
+  const result = await service.play('delta-available');
+  assert.equal(result.ok, true);
+  assert.match(result.warning, /ещё не подтверждены/);
+  assert.equal(state.farm.tabId, tabId);
+  assert.equal(tabs.tabs.get(tabId).url, 'https://www.twitch.tv/delta_streamer');
+});
+
+for (const code of [ERROR_CODES.AUTH, ERROR_CODES.INTEGRITY]) {
+  test(`missing rewards must not hide a fatal ${code} failure or navigate the current tab`, async (t) => {
+    const state = baseState(farmableCampaign());
+    state.drops.available = [availableDelta({ drops: [] })];
+    const { service, tabs } = makeService(t, {
+      store: memoryStore(state), gql: deltaGql(),
+      dropsRefresh: async () => { throw new TwitchApiError('session rejected', { code }); },
+    });
+    await service.start();
+    const before = structuredClone(state.farm);
+    await assert.rejects(service.play('delta-available'), (error) => error.code === code);
+    assert.deepEqual(state.farm, before);
+    assert.equal(tabs.actions.created.length, 1);
+    assert.notEqual(tabs.tabs.get(state.farm.tabId).url, 'https://www.twitch.tv/delta_streamer');
+  });
+}
+
+test('reward hydration restores normal eligibility and completion rotation after provisional playback', async (t) => {
+  const state = baseState(farmableCampaign());
+  state.drops.available = [availableDelta({ drops: [] })];
+  const { service } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
+  await service.play('delta-available');
+  state.drops.available = [availableDelta({ currentMinutes: 5 })];
+  await service.tick({ refreshDrops: false });
+  assert.equal(state.farm.campaignId, 'delta-available');
+  assert.ok(state.farm.lastProgressMark > 0);
+  state.drops.available[0] = { ...availableDelta(), completed: true };
+  await service.tick({ refreshDrops: false });
+  assert.equal(state.farm.campaignId, 'campaign-farm');
+  assert.equal(state.farm.manualCampaignId, null);
+});
+
+for (const autoSwitch of [true, false]) {
+  test(`missing reward data still respects the three-minute idle policy (auto-switch ${autoSwitch})`, async (t) => {
+    const state = baseState(farmableCampaign());
+    state.settings.farmAutoSwitch = autoSwitch;
+    state.drops.available = [availableDelta({ drops: [] })];
+    const { service } = makeService(t, { store: memoryStore(state), gql: deltaGql() });
+    await service.play('delta-available');
+    t.mock.timers.tick(3 * 60_000);
+    await service.tick({ refreshDrops: false });
+    assert.equal(state.farm.campaignId, autoSwitch ? 'campaign-farm' : 'delta-available');
+    assert.equal(state.farm.manualCampaignId, autoSwitch ? null : 'delta-available');
+  });
+}

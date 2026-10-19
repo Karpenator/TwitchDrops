@@ -8,24 +8,39 @@ function environment(url = 'https://www.twitch.tv/drops_streamer') {
   const messages = [];
   const events = new Map();
   const intervals = [];
+  const mediaEvents = new Map();
+  let onMessage;
   const location = new URL(url);
-  const storage = { getItem() { return null; }, setItem() {} };
+  const entries = new Map();
+  const storage = { getItem(key) { return entries.get(key) ?? null; }, setItem(key, value) { entries.set(key, value); } };
   const window = {
     localStorage: storage,
     sessionStorage: storage,
     addEventListener(type, handler) { events.set(type, handler); },
+    dispatchEvent() {},
   };
-  const document = { cookie: '', querySelectorAll() { return []; } };
+  const document = {
+    cookie: '', videos: [],
+    querySelectorAll(selector) { return selector === 'video' ? this.videos : []; },
+    addEventListener(type, handler) { mediaEvents.set(type, handler); },
+  };
   const chrome = { runtime: {
     async sendMessage(message) { messages.push(message); return { ok: false }; },
-    onMessage: { addListener() {} },
+    onMessage: { addListener(listener) { onMessage = listener; } },
   } };
-  new Function('window', 'document', 'location', 'chrome', 'setInterval', source)(
+  new Function('window', 'document', 'location', 'chrome', 'setInterval', 'CustomEvent', source)(
     window, document, location, chrome,
     (handler, delay) => { intervals.push({ handler, delay }); },
+    class CustomEvent { constructor(type, { detail }) { this.type = type; this.detail = detail; } },
   );
   return {
-    messages, location,
+    messages, location, document,
+    message(message) {
+      let response;
+      onMessage(message, {}, (value) => { response = value; });
+      return response;
+    },
+    canPlay(video) { mediaEvents.get('canplay')({ target: video }); },
     poll() { intervals.find(({ delay }) => delay === 5_000).handler(); },
     navigate(url) {
       location.href = url;
@@ -59,4 +74,47 @@ test('the five-second URL poll catches missed SPA events without repeating uncha
   const navigations = env.messages.filter(({ type }) => type === 'TAB_CHANNEL');
   assert.equal(navigations.length, 2);
   assert.equal(navigations[1].payload.login, 'no_drops');
+});
+
+function pausedVideo() {
+  return {
+    tagName: 'VIDEO', readyState: 3, ended: false, paused: true, muted: true, volume: 1, plays: 0,
+    play() { this.plays += 1; this.paused = false; return Promise.resolve(); },
+  };
+}
+
+test('entering farm mode starts the existing player even with the visibility guard disabled', () => {
+  const env = environment();
+  const video = pausedVideo();
+  env.document.videos = [video];
+  env.message({ type: 'GUARD_CONFIG', enabled: false, farm: true });
+  assert.equal(video.plays, 1);
+  assert.equal(video.paused, false);
+  assert.equal(video.muted, false);
+  assert.equal(video.volume, 0);
+});
+
+test('a late player starts on canplay after farm navigation, without waiting for an alarm', () => {
+  const env = environment();
+  env.message({ type: 'GUARD_CONFIG', enabled: true, farm: true });
+  const video = pausedVideo();
+  env.document.videos = [video];
+  env.canPlay(video);
+  assert.equal(video.plays, 1);
+  assert.equal(video.paused, false);
+  assert.equal(video.volume, 0);
+});
+
+test('canplay does not start videos in ordinary tabs or after leaving farm mode', () => {
+  const env = environment();
+  const video = pausedVideo();
+  env.document.videos = [video];
+  env.canPlay(video);
+  assert.equal(video.plays, 0);
+  env.message({ type: 'GUARD_CONFIG', enabled: true, farm: true });
+  video.paused = true;
+  env.message({ type: 'GUARD_CONFIG', enabled: true, farm: false });
+  env.canPlay(video);
+  assert.equal(video.plays, 1, 'only the explicit initial farm start plays the video');
+  assert.equal(video.paused, true);
 });

@@ -470,3 +470,50 @@ test('a slug belonging to a different game id is not accepted', async (t) => {
   await service.refresh({ claim: false });
   assert.equal(store.state.drops.available[0].categoryUrl, 'https://www.twitch.tv/directory/category/arena-breakout-infinite?filter=drops');
 });
+
+test('missing details keep the same viewer\'s known channel restrictions and account-link metadata', async (t) => {
+  const restricted = rawCampaign('restricted', {
+    self: { isAccountConnected: false },
+    allow: { isEnabled: true, channels: [{ login: 'only_streamer' }] },
+    accountLinkURL: 'https://www.twitch.tv/drops/campaigns',
+  });
+  const gql = campaignApi({ available: [restricted] });
+  const { service, store } = makeService(t, { gql });
+  await service.refresh({ claim: false });
+  gql.failures.batch = new Error('details unavailable');
+  await service.refresh({ claim: false });
+  const campaign = store.state.drops.available[0];
+  assert.deepEqual(campaign.drops, [], 'do not invent reward details when Twitch did not return them');
+  assert.deepEqual(campaign.allowedChannels.map((channel) => channel.login), ['only_streamer']);
+  assert.equal(campaign.linked, false);
+  assert.equal(campaign.accountLinkUrl, 'https://www.twitch.tv/drops/campaigns');
+});
+
+test('known restrictions are never inherited from a different viewer after a failed details request', async (t) => {
+  const gql = campaignApi({ available: [rawCampaign('restricted', {
+    self: { isAccountConnected: false },
+    allow: { isEnabled: true, channels: [{ login: 'private_streamer' }] },
+  })] });
+  const { service, store } = makeService(t, { gql });
+  await service.refresh({ claim: false });
+  store.state.user.id = 'another-viewer';
+  gql.failures.batch = new Error('details unavailable');
+  await service.refresh({ claim: false });
+  assert.deepEqual(store.state.drops.available[0].allowedChannels, []);
+  assert.equal(store.state.drops.available[0].linked, true);
+});
+
+test('fresh explicit channel and linkage changes override previously cached restrictions', async (t) => {
+  const campaign = rawCampaign('restricted', {
+    self: { isAccountConnected: false },
+    allow: { isEnabled: true, channels: [{ login: 'only_streamer' }] },
+  });
+  const gql = campaignApi({ available: [campaign] });
+  const { service, store } = makeService(t, { gql });
+  await service.refresh({ claim: false });
+  campaign.allow = { isEnabled: false, channels: [] };
+  campaign.self.isAccountConnected = true;
+  await service.refresh({ claim: false });
+  assert.deepEqual(store.state.drops.available[0].allowedChannels, []);
+  assert.equal(store.state.drops.available[0].linked, true);
+});

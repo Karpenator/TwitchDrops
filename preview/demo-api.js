@@ -22,7 +22,7 @@
     campaign.progressPct = campaign.totalDrops
       ? Math.round((campaign.claimedCount / campaign.totalDrops) * 100)
       : 0;
-    campaign.completed = campaign.drops.every((drop) => drop.isClaimed);
+    campaign.completed = campaign.drops.length > 0 && campaign.drops.every((drop) => drop.isClaimed);
     return campaign;
   }
 
@@ -125,11 +125,11 @@
     ],
   });
 
-  function availableCampaign({ id, name, game, slug, startsIn = -DAY, endsIn, linked = true }) {
+  function availableCampaign({ id, name, game, slug, startsIn = -DAY, endsIn, linked = true, rewardsPending = false }) {
     return {
       ...makeCampaign({
         id, name, game, slug, startsIn, endsIn, linked,
-        drops: [makeDrop({ id: `${id}-reward`, name: 'Демонстрационная награда', required: 60, current: 0 })],
+        drops: rewardsPending ? [] : [makeDrop({ id: `${id}-reward`, name: 'Демонстрационная награда', required: 60, current: 0 })],
       }),
       isAvailable: true,
       isInProgress: false,
@@ -174,7 +174,7 @@
         }),
         availableCampaign({
           id: 'apex-community', name: 'Apex Legends: Community Drops',
-          game: 'Apex Legends', slug: 'apex-legends', endsIn: 7 * DAY,
+          game: 'Apex Legends', slug: 'apex-legends', endsIn: 7 * DAY, rewardsPending: true,
         }),
         availableCampaign({
           id: 'apex-next-week', name: 'Apex Legends: Next Event',
@@ -399,7 +399,7 @@
     }
     const campaigns = [selected, ...all.filter((campaign) =>
       campaign !== selected && campaign.game.slug === selected.game.slug &&
-      campaign.active && campaign.linked && !campaign.completed,
+      campaign.active && campaign.linked && !campaign.completed && campaign.drops.length > 0,
     )];
     state.settings.autoFarm = true;
     const login = selected.game.slug === 'rust' ? 'shroud' : `${selected.game.slug.slice(0, 18).replaceAll('-', '_')}_demo`;
@@ -421,12 +421,14 @@
       lastProgressAt: Date.now(),
       error: null,
     };
-    return {
-      ...payload(),
-      warning: selected.linked === false
-        ? 'Просмотр запущен без привязки игрового аккаунта. Получение наград зависит от привязки.'
-        : null,
-    };
+    const warnings = [];
+    if (!selected.drops.length) {
+      warnings.push('Трансляция запущена. Twitch пока не вернул данные о наградах; прогресс и получение дропсов ещё не подтверждены.');
+    }
+    if (selected.linked === false) {
+      warnings.push('Просмотр запущен без привязки игрового аккаунта. Получение наград зависит от привязки.');
+    }
+    return { ...payload(), warning: warnings.join(' ') || null };
   }
 
   function stopFarm() {
